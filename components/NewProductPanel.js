@@ -172,30 +172,45 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
       const { error: imagesError } = await supabase.from('product_images').insert(imageRecords);
       if (imagesError) throw imagesError;
 
-      onClose();
+      // ... dentro handleSave, dopo l'upload delle foto grezze su Supabase ...
 
-      productImages.forEach(async (capturedImage, index) => {
-      try {
-        const poseInfo = modelPoses.find(p => p.angle === capturedImage.angle);
-        const garmentUrl = productUrls[index];
+      onClose(); // Chiudiamo subito il pannello, il magazziniere può passare al prossimo capo!
 
-        if (poseInfo && garmentUrl) {
-          await fetch('/api/generate-genlook', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              productId: productId,
-              modelImageUrl: poseInfo.base_image_url,
-              garmentImageUrl: garmentUrl,
-              angle: capturedImage.angle,
-              workerId: workerId // per popolare externalUserId
-            })
-          });
+      // --- INNESCHIAMO GENLOOK PER OGNI POSA CARICATA IN PARALLELO ---
+      // Mappiamo le promesse per non bloccare il client
+      const genlookPromises = productImages.map(async (capturedImage, index) => {
+        try {
+          // Cerchiamo la base corrispondente all'angolo scattato (es. 'front', 'back')
+          const poseInfo = modelPoses.find(p => p.angle === capturedImage.angle);
+          const garmentUrl = productUrls[index]; // L'URL della foto grezza su Supabase
+
+          if (poseInfo && garmentUrl) {
+            console.log(`Avvio Genlook per angolo: ${capturedImage.angle}`);
+            
+            const response = await fetch('/api/generate-genlook', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                productId: productId,
+                modelImageUrl: poseInfo.base_image_url,
+                garmentImageUrl: garmentUrl,
+                angle: capturedImage.angle,
+                workerId: workerId
+              })
+            });
+
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error);
+            
+            console.log(`Successo Genlook per ${capturedImage.angle}:`, result.url);
+          }
+        } catch (err) {
+          console.error(`Errore generazione per angolo ${capturedImage.angle}:`, err);
         }
-      } catch (err) {
-        console.error(`Errore Genlook angolo ${capturedImage.angle}:`, err);
-      }
-    });
+      });
+
+      // Opzionale: esegui le promesse in background senza aspettare il completamento nella UI
+      Promise.allSettled(genlookPromises);
 
     } catch (error) {
       console.error("Errore salvataggio:", error);
