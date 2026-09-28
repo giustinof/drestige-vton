@@ -1,18 +1,15 @@
 "use client"
 import { useState, useEffect } from 'react';
 import { Camera, X, Loader2, Check, Info } from 'lucide-react';
-import { supabase } from '../lib/supabase'; // Aggiusta il percorso
+import { supabase } from '../lib/supabase'; 
 
 export default function NewProductPanel({ onClose, workerId, categories, initialTagFile }) {
   const [tagImage] = useState(URL.createObjectURL(initialTagFile));
   
-  // -- NUOVI STATI PER LA GESTIONE DEL MODELLO --
-  const [selectedModelInfo, setSelectedModelInfo] = useState(null); // { id, name }
-  const [modelPoses, setModelPoses] = useState([]); // [{ angle, url }]
+  const [selectedModelInfo, setSelectedModelInfo] = useState(null); 
+  const [modelPoses, setModelPoses] = useState([]); 
   const [isLoadingModel, setIsLoadingModel] = useState(false);
   
-  // Modificato lo stato productImages per gestire lo scatto guidato (angolo per angolo)
-  // Ora sarà un array di oggetti: { file, preview, angle }
   const [productImages, setProductImages] = useState([]); 
   
   const [formData, setFormData] = useState({
@@ -25,7 +22,19 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
   const [isOcrProcessing, setIsOcrProcessing] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
-  // 1. OCR Iniziale (Invariato)
+  // --- LOGICA ACCESSORI ---
+  const isAccessory = categories.find(c => c.id === formData.category_id)?.gender?.toLowerCase() === 'unisex';
+  
+  const accessoryPoses = [
+    { angle: 'front', label: 'Fronte' },
+    { angle: 'side', label: 'Lato Esterno' },
+    { angle: 'back', label: 'Retro' },
+    { angle: 'top', label: 'Dall\'alto' },
+    { angle: 'detail', label: 'Dettaglio / Logo' },
+    { angle: 'sole', label: 'Suola / Interno' }
+  ];
+
+  // 1. OCR Iniziale
   useEffect(() => {
     const processTag = async () => {
       try {
@@ -44,27 +53,27 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     processTag();
   }, [initialTagFile]);
 
-  // 2. LOGICA SELEZIONE MODELLO (Scatta quando si sceglie la categoria)
+  // 2. LOGICA SELEZIONE MODELLO (Solo per abbigliamento)
   useEffect(() => {
     const fetchModel = async () => {
-      if (!formData.category_id) return;
+      if (!formData.category_id || isAccessory) {
+        setIsLoadingModel(false);
+        return;
+      }
       
       setIsLoadingModel(true);
-      setProductImages([]); // Reset delle foto del prodotto se cambi categoria
+      setProductImages([]); 
       setSelectedModelInfo(null);
       setModelPoses([]);
 
       try {
-        // A. Trova il genere della categoria selezionata
         const category = categories.find(c => c.id === formData.category_id);
         if (!category) throw new Error("Categoria non trovata");
 
-        // B. Trova i modelli attivi con quel genere
-        // Nota: Assicurati che il 'gender' in ai_models coincida (es. 'donna' o 'Donna')
         const { data: availableModels, error: modelsError } = await supabase
           .from('ai_models')
           .select('id, name')
-          .ilike('gender', category.gender) // Usa ilike per case-insensitivity
+          .ilike('gender', category.gender)
           .eq('is_active', true);
 
         if (modelsError) throw modelsError;
@@ -75,11 +84,9 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
            return;
         }
 
-        // C. Scegli un modello a caso
         const randomModel = availableModels[Math.floor(Math.random() * availableModels.length)];
         setSelectedModelInfo(randomModel);
 
-        // D. Prendi le pose previste per QUEL modello e QUELLA categoria
         const { data: poses, error: posesError } = await supabase
           .from('ai_poses')
           .select('angle, base_image_url')
@@ -88,7 +95,6 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
 
         if (posesError) throw posesError;
         
-        // Ordiniamo le pose (frontale per prima) per coerenza visiva
         const order = { 'front': 1, 'back': 2, 'left': 3, 'right': 4 };
         const sortedPoses = poses.sort((a, b) => (order[a.angle] || 5) - (order[b.angle] || 5));
         
@@ -102,15 +108,14 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     };
 
     fetchModel();
-  }, [formData.category_id, categories]);
+  }, [formData.category_id, categories, isAccessory]);
 
 
-  // 3. Acquisizione guidata (passiamo l'angolo)
+  // 3. Acquisizione guidata
   const handleProductCapture = (e, angle) => {
     const file = e.target.files[0];
     if (!file) return;
     
-    // Aggiorna se esiste già una foto per quell'angolo, altrimenti aggiunge
     setProductImages(prev => {
       const existing = prev.filter(p => p.angle !== angle);
       return [...existing, { file, preview: URL.createObjectURL(file), angle }];
@@ -119,16 +124,14 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     e.target.value = null; 
   };
 
-  // 4. Salvataggio (Aggiornato per supportare i metadati 'angle')
+  // 4. Salvataggio e Avvio AI Sequenziale
   const handleSave = async () => {
     if (!formData.category_id) return alert("Devi selezionare una categoria.");
-    // Verifica che l'utente abbia scattato almeno la foto 'front' (opzionale, ma consigliato)
-    const hasFront = productImages.some(img => img.angle === 'front');
-    if (!hasFront && modelPoses.length > 0) return alert("Devi scattare almeno la foto frontale del capo.");
     if (productImages.length === 0) return alert("Aggiungi almeno una foto del prodotto.");
 
     setIsSaving(true);
     try {
+      // Creazione prodotto a DB
       const { data: newProduct, error: productError } = await supabase
         .from('products')
         .insert([{
@@ -138,13 +141,12 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
           variant_code: formData.variant_code,
           ean: formData.ean,
           status: 'processing',
-          // Opzionale: puoi salvare quale modello è stato assegnato, se hai aggiunto la colonna
-          // assigned_model_id: selectedModelInfo?.id 
         }]).select().single();
 
       if (productError) throw productError;
       const productId = newProduct.id;
 
+      // Upload function
       const uploadImageToStorage = async (file, type, angle = 'none') => {
         const fileExt = file.name.split('.').pop();
         const fileName = `${productId}_${type}_${angle}_${Date.now()}.${fileExt}`;
@@ -159,58 +161,89 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
 
       const tagUrl = await uploadImageToStorage(initialTagFile, 'tag');
       
-      // Carica mantenendo traccia dell'angolo
       const productUploadPromises = productImages.map(img => uploadImageToStorage(img.file, 'raw_item', img.angle));
       const productUrls = await Promise.all(productUploadPromises);
 
       const imageRecords = [
         { product_id: productId, url: tagUrl, type: 'tag' },
-        // Modifica la tabella product-images per aggiungere la colonna 'angle' se vuoi tracciarlo a DB
-        ...productUrls.map((url, index) => ({ product_id: productId, url, type: 'raw_item' /* , angle: productImages[index].angle */ }))
+        ...productUrls.map((url, index) => ({ product_id: productId, url, type: 'raw_item' }))
       ];
 
       const { error: imagesError } = await supabase.from('product_images').insert(imageRecords);
       if (imagesError) throw imagesError;
 
-      // ... dentro handleSave, dopo l'upload delle foto grezze su Supabase ...
+      onClose(); // Chiudiamo subito il pannello!
 
-      onClose(); // Chiudiamo subito il pannello, il magazziniere può passare al prossimo capo!
+      // --- ELABORAZIONE AI SEQUENZIALE (ANTI RATE-LIMIT) ---
+      const processAI = async () => {
+        for (let index = 0; index < productImages.length; index++) {
+          const capturedImage = productImages[index];
+          const garmentUrl = productUrls[index];
+          
+          try {
+            if (isAccessory) {
+              // --- ROUTE PHOTOROOM (Accessori) ---
+              console.log(`[Photoroom] Avvio elaborazione accessorio: ${capturedImage.angle}`);
+              
+              const response = await fetch('/api/generate-product-bg', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  productId: productId,
+                  garmentImageUrl: garmentUrl,
+                  angle: capturedImage.angle
+                })
+              });
 
-      // --- INNESCHIAMO GENLOOK PER OGNI POSA CARICATA IN PARALLELO ---
-      // Mappiamo le promesse per non bloccare il client
-      const genlookPromises = productImages.map(async (capturedImage, index) => {
-        try {
-          // Cerchiamo la base corrispondente all'angolo scattato (es. 'front', 'back')
-          const poseInfo = modelPoses.find(p => p.angle === capturedImage.angle);
-          const garmentUrl = productUrls[index]; // L'URL della foto grezza su Supabase
+              const contentType = response.headers.get("content-type");
+              if (!response.ok) {
+                if (contentType && contentType.includes("application/json")) {
+                  const errData = await response.json();
+                  throw new Error(errData.error);
+                }
+                throw new Error(`Errore Server Photoroom: ${response.status}`);
+              }
+              const result = await response.json();
+              console.log(`[Photoroom] Successo per ${capturedImage.angle}:`, result.url);
 
-          if (poseInfo && garmentUrl) {
-            console.log(`Avvio Genlook per angolo: ${capturedImage.angle}`);
-            
-            const response = await fetch('/api/generate-genlook', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                productId: productId,
-                modelImageUrl: poseInfo.base_image_url,
-                garmentImageUrl: garmentUrl,
-                angle: capturedImage.angle,
-                workerId: workerId
-              })
-            });
+            } else {
+              // --- ROUTE GENLOOK (Abbigliamento VTON) ---
+              const poseInfo = modelPoses.find(p => p.angle === capturedImage.angle);
+              if (poseInfo) {
+                console.log(`[Genlook] Avvio elaborazione capo: ${capturedImage.angle}`);
+                
+                const response = await fetch('/api/generate-genlook', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    productId: productId,
+                    modelImageUrl: poseInfo.base_image_url,
+                    garmentImageUrl: garmentUrl,
+                    angle: capturedImage.angle,
+                    workerId: workerId
+                  })
+                });
 
-            const result = await response.json();
-            if (!response.ok) throw new Error(result.error);
-            
-            console.log(`Successo Genlook per ${capturedImage.angle}:`, result.url);
+                const contentType = response.headers.get("content-type");
+                if (!response.ok) {
+                  if (contentType && contentType.includes("application/json")) {
+                    const errData = await response.json();
+                    throw new Error(errData.error);
+                  }
+                  throw new Error(`Errore Server Genlook: ${response.status}`);
+                }
+                const result = await response.json();
+                console.log(`[Genlook] Successo per ${capturedImage.angle}:`, result.url);
+              }
+            }
+          } catch (err) {
+            console.error(`Errore critico su angolo ${capturedImage.angle}:`, err);
           }
-        } catch (err) {
-          console.error(`Errore generazione per angolo ${capturedImage.angle}:`, err);
         }
-      });
-
-      // Opzionale: esegui le promesse in background senza aspettare il completamento nella UI
-      Promise.allSettled(genlookPromises);
+        console.log("Tutte le elaborazioni AI completate per questo prodotto.");
+      };
+      
+      processAI();
 
     } catch (error) {
       console.error("Errore salvataggio:", error);
@@ -224,7 +257,6 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
   const womenCategories = categories.filter(c => c.gender.toLowerCase() === 'donna');
   const unisexCategories = categories.filter(c => c.gender.toLowerCase() === 'unisex');
 
-  // Traduzione per la UI
   const angleLabels = { 'front': 'Fronte', 'back': 'Retro', 'left': 'Lato SX', 'right': 'Lato DX' };
 
   return (
@@ -240,7 +272,7 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
 
         <div className="flex-1 overflow-y-auto p-6 space-y-8 pb-32">
           
-          {/* Sezione Dati */}
+          {/* Sezione Dati OCR */}
           <div className="space-y-4">
             <div className="flex justify-between items-end mb-2">
               <h3 className="font-bold text-gray-900">Dati Cartellino</h3>
@@ -250,8 +282,7 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-1">
                 <input 
-                  type="text" 
-                  value={formData.model_code} 
+                  type="text" value={formData.model_code} 
                   onChange={e => setFormData({...formData, model_code: e.target.value})}
                   className="w-full bg-gray-100 rounded-xl px-4 py-3 text-black font-mono font-medium placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black"
                   placeholder={isOcrProcessing ? "Lettura..." : "Modello"} 
@@ -259,8 +290,7 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
               </div>
               <div className="col-span-1">
                 <input 
-                  type="text" 
-                  value={formData.variant_code} 
+                  type="text" value={formData.variant_code} 
                   onChange={e => setFormData({...formData, variant_code: e.target.value})}
                   className="w-full bg-gray-100 rounded-xl px-4 py-3 text-black font-mono font-medium placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black" 
                   placeholder={isOcrProcessing ? "Lettura..." : "Variante"}
@@ -268,8 +298,7 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
               </div>
               <div className="col-span-2">
                 <input 
-                  type="text" 
-                  value={formData.ean} 
+                  type="text" value={formData.ean} 
                   onChange={e => setFormData({...formData, ean: e.target.value})}
                   className="w-full bg-gray-100 rounded-xl px-4 py-3 text-black font-mono font-medium placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black" 
                   placeholder={isOcrProcessing ? "Lettura EAN..." : "Codice a barre"}
@@ -305,81 +334,118 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
             </select>
           </div>
 
-          {/* SEZIONE MODELLO E SCATTO FOTO (Dinamicizzata) */}
+          {/* SEZIONE BIVIO: SCATTO FOTO (Accessori vs Abbigliamento) */}
           {formData.category_id && (
             <div className="space-y-4">
               <div className="flex justify-between items-end mb-2">
                 <h3 className="font-bold text-gray-900">Scatta le foto richieste</h3>
-                {isLoadingModel && <Loader2 size={16} className="animate-spin text-gray-400" />}
+                {isLoadingModel && !isAccessory && <Loader2 size={16} className="animate-spin text-gray-400" />}
               </div>
 
-              {selectedModelInfo && (
-                <div className="bg-blue-50 text-blue-800 p-3 rounded-xl flex items-start gap-3 text-sm font-medium">
-                  <Info size={20} className="mt-0.5 shrink-0" />
-                  <p>Replica le pose del modello (<strong>{selectedModelInfo.name}</strong>) per un risultato perfetto.</p>
-                </div>
-              )}
-
-              {/* Layout Dinamico basato sulle pose richieste */}
-              <div className="grid grid-cols-2 gap-4">
-                {modelPoses.map((pose) => {
-                  const capturedImage = productImages.find(img => img.angle === pose.angle);
-                  const label = angleLabels[pose.angle] || pose.angle;
-
-                  return (
-                    <div key={pose.angle} className="relative aspect-[3/4] bg-gray-100 rounded-2xl overflow-hidden shadow-inner flex flex-col group">
+              {isAccessory ? (
+                // --- UI ACCESSORI (Photoroom) ---
+                <>
+                  <div className="bg-blue-50 text-blue-800 p-3 rounded-xl flex items-start gap-3 text-sm font-medium mb-4">
+                    <Info size={20} className="mt-0.5 shrink-0" />
+                    <p>Poggia l'oggetto su una superficie pulita. L'AI rimuoverà lo sfondo e aggiungerà ombre realistiche.</p>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    {accessoryPoses.map((pose) => {
+                      const capturedImage = productImages.find(img => img.angle === pose.angle);
                       
-                      {/* Immagine di base (Ghost) */}
-                      {!capturedImage && (
-                        <>
-                          <img src={pose.base_image_url} alt={pose.angle} className="absolute inset-0 w-full h-full object-cover opacity-30 mix-blend-multiply" />
-                          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                            <span className="bg-white/80 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold text-black mb-2 shadow-sm uppercase tracking-wide">
-                              {label}
-                            </span>
-                          </div>
-                        </>
-                      )}
+                      return (
+                        <div key={pose.angle} className="relative aspect-square bg-gray-50 rounded-2xl overflow-hidden flex flex-col group border-2 border-dashed border-gray-300">
+                          
+                          {!capturedImage && (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center p-2 text-center pointer-events-none">
+                              <span className="text-sm font-bold text-gray-600">{pose.label}</span>
+                            </div>
+                          )}
 
-                      {/* Immagine Scattata */}
-                      {capturedImage && (
-                        <img src={capturedImage.preview} alt="Catturata" className="absolute inset-0 w-full h-full object-cover z-10" />
-                      )}
+                          {capturedImage && (
+                            <img src={capturedImage.preview} className="absolute inset-0 w-full h-full object-cover z-10" />
+                          )}
 
-                      {/* Input Nascosto */}
-                      <input 
-                        id={`capture-${pose.angle}`}
-                        type="file" 
-                        accept="image/*" 
-                        capture="environment" 
-                        className="hidden" 
-                        onChange={(e) => handleProductCapture(e, pose.angle)} 
-                      />
-                      
-                      {/* Overlay Clickable per scattare/rifare */}
-                      <label 
-                        htmlFor={`capture-${pose.angle}`}
-                        className={`absolute inset-0 z-20 flex flex-col justify-end p-3 cursor-pointer ${capturedImage ? 'opacity-0 group-hover:opacity-100 bg-black/40' : 'bg-transparent'} transition-all`}
-                      >
-                        <div className="bg-black text-white w-full py-2.5 rounded-xl flex justify-center items-center gap-2 backdrop-blur-md shadow-md active:scale-95 transition-transform">
-                          <Camera size={18} />
-                          <span className="text-sm font-bold">{capturedImage ? 'Rifai' : 'Scatta'}</span>
+                          <input 
+                            id={`capture-${pose.angle}`} type="file" accept="image/*" capture="environment" 
+                            className="hidden" onChange={(e) => handleProductCapture(e, pose.angle)} 
+                          />
+                          <label 
+                            htmlFor={`capture-${pose.angle}`}
+                            className={`absolute inset-0 z-20 flex flex-col justify-end p-3 cursor-pointer ${capturedImage ? 'opacity-0 group-hover:opacity-100 bg-black/40' : 'bg-transparent'} transition-all`}
+                          >
+                            <div className="bg-black text-white w-full py-2.5 rounded-xl flex justify-center items-center gap-2 backdrop-blur-md shadow-md active:scale-95 transition-transform">
+                              <Camera size={18} />
+                              <span className="text-sm font-bold">{capturedImage ? 'Rifai' : 'Scatta'}</span>
+                            </div>
+                          </label>
                         </div>
-                      </label>
+                      );
+                    })}
+                  </div>
+                </>
+              ) : (
+                // --- UI ABBIGLIAMENTO (Genlook VTON) ---
+                <>
+                  {selectedModelInfo && (
+                    <div className="bg-blue-50 text-blue-800 p-3 rounded-xl flex items-start gap-3 text-sm font-medium mb-4">
+                      <Info size={20} className="mt-0.5 shrink-0" />
+                      <p>Replica le pose del modello (<strong>{selectedModelInfo.name}</strong>) per un risultato perfetto.</p>
                     </div>
-                  );
-                })}
-              </div>
-              
-              {/* Fallback se la categoria non ha pose mappate */}
-              {!isLoadingModel && modelPoses.length === 0 && (
-                <div className="p-4 bg-gray-50 border border-dashed border-gray-300 rounded-2xl text-center text-gray-500 text-sm font-medium">
-                  Nessun modello specifico configurato per questa categoria. Mappalo nel database.
-                </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-4">
+                    {modelPoses.map((pose) => {
+                      const capturedImage = productImages.find(img => img.angle === pose.angle);
+                      const label = angleLabels[pose.angle] || pose.angle;
+
+                      return (
+                        <div key={pose.angle} className="relative aspect-[3/4] bg-gray-100 rounded-2xl overflow-hidden shadow-inner flex flex-col group">
+                          
+                          {!capturedImage && (
+                            <>
+                              <img src={pose.base_image_url} alt={pose.angle} className="absolute inset-0 w-full h-full object-cover opacity-30 mix-blend-multiply" />
+                              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                                <span className="bg-white/80 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold text-black mb-2 shadow-sm uppercase tracking-wide">
+                                  {label}
+                                </span>
+                              </div>
+                            </>
+                          )}
+
+                          {capturedImage && (
+                            <img src={capturedImage.preview} alt="Catturata" className="absolute inset-0 w-full h-full object-cover z-10" />
+                          )}
+
+                          <input 
+                            id={`capture-${pose.angle}`} type="file" accept="image/*" capture="environment" 
+                            className="hidden" onChange={(e) => handleProductCapture(e, pose.angle)} 
+                          />
+                          
+                          <label 
+                            htmlFor={`capture-${pose.angle}`}
+                            className={`absolute inset-0 z-20 flex flex-col justify-end p-3 cursor-pointer ${capturedImage ? 'opacity-0 group-hover:opacity-100 bg-black/40' : 'bg-transparent'} transition-all`}
+                          >
+                            <div className="bg-black text-white w-full py-2.5 rounded-xl flex justify-center items-center gap-2 backdrop-blur-md shadow-md active:scale-95 transition-transform">
+                              <Camera size={18} />
+                              <span className="text-sm font-bold">{capturedImage ? 'Rifai' : 'Scatta'}</span>
+                            </div>
+                          </label>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  
+                  {!isLoadingModel && modelPoses.length === 0 && (
+                    <div className="p-4 bg-gray-50 border border-dashed border-gray-300 rounded-2xl text-center text-gray-500 text-sm font-medium">
+                      Nessun modello specifico configurato per questa categoria.
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
-
         </div>
 
         {/* Footer */}
