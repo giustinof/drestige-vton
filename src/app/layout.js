@@ -12,26 +12,25 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Drestige Hub",
-  description: "Gestione catalogo e VTON",
+  title: "Drestige V-TON",
+  description: "Gestione catalogo e Virtual Try-On",
 };
 
-// Blocca lo zoom su mobile e imposta il tema
 export const viewport = {
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
-  themeColor: '#ffffff',
+  themeColor: '#fafafa', // Aggiornato per fondersi col nuovo bg-zinc-50
 };
 
 export default function RootLayout({ children }) {
   return (
     <html
       lang="it"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased selection:bg-black selection:text-white`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased selection:bg-indigo-500 selection:text-white`}
     >
-      <body className="min-h-full flex flex-col bg-white">{children}</body>
+      <body className="min-h-full flex flex-col bg-zinc-50 text-zinc-900">{children}</body>
     </html>
   );
 }
