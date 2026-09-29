@@ -20,7 +20,7 @@ export const metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent", // Si fonde meglio col nostro nuovo sfondo scuro
-    title: "V-TON",
+    title: "Drestige V-TON",
   },
 };
 

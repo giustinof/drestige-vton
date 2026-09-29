@@ -56,7 +56,6 @@ export default function AppHome() {
             type
           )
         `)
-        .eq('worker_id', worker.id)
         .order('created_at', { ascending: false });
 
       if (prodsError) {
@@ -146,7 +145,7 @@ export default function AppHome() {
             Accedi a V-TON
           </h2>
           <p className="text-zinc-400 text-[15px] mb-8 text-center px-4 font-medium">
-            Inserisci il tuo codice magazziniere per iniziare il turno.
+            Inserisci il tuo codice magazziniere.
           </p>
           
           <form onSubmit={handleLogin} className="space-y-6 w-full">
@@ -174,7 +173,7 @@ export default function AppHome() {
                 type="submit" 
                 className="relative z-10 w-full bg-white text-black font-semibold text-[17px] py-4 rounded-full active:scale-[0.98] transition-transform"
               >
-                Inizia Turno
+                Accedi
               </button>
             </div>
           </form>
