@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@genlook/api": "^0.1.2",
+    "@imgly/background-removal": "^1.7.0",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.116.0",
     "framer-motion": "^13.4.0",

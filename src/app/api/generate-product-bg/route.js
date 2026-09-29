@@ -1,9 +1,16 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '../../../../lib/supabase';// Aggiusta il percorso del tuo client Supabase
+import { supabase } from '../../../../lib/supabase'; // Controlla sempre i percorsi
 
 export async function POST(req) {
+  let angle = 'sconosciuto'; // Variabile sicura per il catch
+
   try {
-    const { productId, garmentImageUrl, angle } = await req.json();
+    const body = await req.json();
+    const { productId, garmentImageUrl } = body;
+    
+    if (body.angle) {
+      angle = body.angle;
+    }
 
     if (!garmentImageUrl) {
       return NextResponse.json({ error: 'Immagine prodotto mancante' }, { status: 400 });
@@ -18,16 +25,17 @@ export async function POST(req) {
     const formData = new FormData();
     formData.append('imageFile', imageBlob, 'product.jpg');
     
-    // Il cuore della magia: diciamo a Photoroom cosa disegnare dietro l'oggetto intonso
-    formData.append('background.prompt', 'Minimalist bright e-commerce studio lighting, soft grey podium, pure white backdrop');
+    // IL SEGRETO È QUI: Rimuoviamo il prompt testuale generativo!
+    // Usiamo il colore esadecimale per forzare uno sfondo bianco puro stile e-commerce.
+    formData.append('background.color', '#FFFFFF');
     
-    // Generiamo ombre di contatto AI super-realistiche alla base dell'oggetto
+    // Manteniamo l'AI attiva SOLO per generare l'ombra di ancoraggio
     formData.append('shadow.mode', 'ai.soft');
     
-    // Diamo un po' di "respiro" all'oggetto per non farlo incollare ai bordi (margine del 10%)
-    formData.append('padding', '0.1'); 
+    // Aumentato leggermente il padding (0.15) per far "respirare" meglio la scarpa nell'inquadratura
+    formData.append('padding', '0.15'); 
     
-    // Formato di esportazione leggero e di alta qualità
+    // Esportazione
     formData.append('export.format', 'jpeg');
 
     // --- FASE 3: Chiamata a Photoroom ---
@@ -40,7 +48,6 @@ export async function POST(req) {
     });
 
     if (!photoroomResponse.ok) {
-        // Photoroom restituisce gli errori in JSON se qualcosa va storto
         const contentType = photoroomResponse.headers.get("content-type");
         if (contentType && contentType.includes("application/json")) {
             const errData = await photoroomResponse.json();
@@ -49,7 +56,7 @@ export async function POST(req) {
         throw new Error(`Errore Server Photoroom: ${photoroomResponse.status}`);
     }
 
-    // A differenza di Genlook, Photoroom è Sincrono e ci sputa fuori DIRETTAMENTE l'immagine in formato binario!
+    // Risultato sincrono binario
     const resultImageBuffer = await photoroomResponse.arrayBuffer();
 
     // --- FASE 4: Salvataggio nel bucket Supabase ---
@@ -57,7 +64,7 @@ export async function POST(req) {
     const filePath = `${productId}/${fileName}`;
 
     const { error: uploadError } = await supabase.storage
-      .from('product_images') // Assicurati che questo sia il nome esatto del tuo bucket
+      .from('product-images') // IL TUO BUCKET
       .upload(filePath, resultImageBuffer, {
         contentType: 'image/jpeg',
       });
@@ -66,7 +73,7 @@ export async function POST(req) {
 
     // Recupero dell'URL pubblico
     const { data: { publicUrl } } = supabase.storage
-      .from('product_images')
+      .from('product-images')
       .getPublicUrl(filePath);
 
     // --- FASE 5: Scrittura a Database ---
@@ -76,7 +83,7 @@ export async function POST(req) {
         product_id: productId,
         url: publicUrl,
         type: 'processed',
-        // angle: angle // Se stai salvando l'angolazione nella tabella db
+        // angle: angle 
       }]);
 
     if (dbError) throw dbError;
@@ -84,8 +91,7 @@ export async function POST(req) {
     return NextResponse.json({ success: true, url: publicUrl, angle });
 
   } catch (error) {
-    const failedAngle = angle || 'sconosciuto';
-    console.error(`Errore Photoroom (${failedAngle}):`, error);
+    console.error(`Errore Photoroom (${angle}):`, error);
     return NextResponse.json({ error: error.message || 'Errore generazione background' }, { status: 500 });
   }
 }
