@@ -14,6 +14,14 @@ const geistMono = Geist_Mono({
 export const metadata = {
   title: "Drestige V-TON",
   description: "Gestione catalogo e Virtual Try-On",
+  // 1. DICHIARAZIONE DEL MANIFEST (FONDAMENTALE PER ANDROID/CHROME)
+  manifest: "/manifest.json",
+  // 2. DICHIARAZIONE PER INSTALLAZIONE SU IOS/SAFARI
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent", // Si fonde meglio col nostro nuovo sfondo scuro
+    title: "V-TON",
+  },
 };
 
 export const viewport = {
@@ -21,16 +29,22 @@ export const viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
-  themeColor: '#fafafa', // Aggiornato per fondersi col nuovo bg-zinc-50
+  themeColor: '#09090b', // Aggiornato al nero del nuovo design
 };
 
 export default function RootLayout({ children }) {
   return (
     <html
       lang="it"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased selection:bg-indigo-500 selection:text-white`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased selection:bg-white/20 selection:text-white`}
     >
-      <body className="min-h-full flex flex-col bg-zinc-50 text-zinc-900">{children}</body>
+      <head>
+        {/* 3. ICONA PER LA HOME DI IOS */}
+        <link rel="apple-touch-icon" href="/icon-192x192.png" />
+      </head>
+      <body className="min-h-full flex flex-col bg-[#09090b] text-white">
+        {children}
+      </body>
     </html>
   );
 }

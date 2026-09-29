@@ -120,30 +120,66 @@ export default function AppHome() {
 
   if (!worker) {
     return (
-      <div className="min-h-screen bg-zinc-50 flex flex-col p-6">
-        <div className="flex-1 flex flex-col justify-center max-w-sm mx-auto w-full bg-white p-8 rounded-[2rem] shadow-sm border border-zinc-100 my-auto">
-          <div className="w-16 h-16 bg-zinc-950 text-white rounded-2xl flex items-center justify-center text-2xl font-black mb-6">D.</div>
-          <h2 className="text-3xl font-black mb-2 text-zinc-900 tracking-tight">Accesso V-TON</h2>
-          <p className="text-zinc-500 mb-8 leading-relaxed">Inserisci il tuo codice magazziniere per iniziare la sessione fotografica.</p>
+      <div className="min-h-screen bg-[#09090b] relative flex flex-col items-center justify-center p-6 font-sans text-white overflow-hidden">
+        
+        {/* Sfondo: Richiamo sottile dell'immagine della sfilata per continuità visiva */}
+        <div className="absolute top-0 left-0 right-0 h-[50vh] z-0 pointer-events-none">
+          <div 
+            className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-100"
+            style={{ backgroundImage: "url('/bg.jpg')" }}
+          />
+          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#09090b]/80 to-[#09090b]" />
+        </div>
+
+        <div className="relative z-10 flex-1 flex flex-col justify-center max-w-sm mx-auto w-full mb-12">
           
-          <form onSubmit={handleLogin} className="space-y-5">
+          {/* Logo (Stesso della landing page) */}
+          <div className="w-24 h-24 mb-8 mx-auto">
+            <img 
+              src="/logo.png" 
+              alt="Drestige Logo" 
+              className="w-full h-full object-contain drop-shadow-lg"
+            />
+          </div>
+          
+          <h2 className="text-[28px] font-bold mb-2 text-white tracking-tight text-center">
+            Accedi a V-TON
+          </h2>
+          <p className="text-zinc-400 text-[15px] mb-8 text-center px-4 font-medium">
+            Inserisci il tuo codice magazziniere per iniziare il turno.
+          </p>
+          
+          <form onSubmit={handleLogin} className="space-y-6 w-full">
             <div>
               <input
                 type="text"
                 placeholder="Es. MAG-01"
-                className="w-full bg-zinc-50 border border-zinc-200 rounded-2xl px-5 py-4 text-lg font-mono uppercase focus:ring-4 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none placeholder:text-zinc-400 transition-all"
+                className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-lg font-mono uppercase text-center text-white focus:ring-2 focus:ring-white/20 focus:border-white/30 outline-none placeholder:text-zinc-600 transition-all backdrop-blur-md"
                 value={inputCode}
                 onChange={(e) => setInputCode(e.target.value.toUpperCase())}
                 required
               />
-              {error && <p className="text-red-500 text-sm mt-2 ml-2 font-medium">{error}</p>}
+              {error && (
+                <p className="text-red-400 text-sm mt-3 text-center font-medium animate-in fade-in slide-in-from-top-1">
+                  {error}
+                </p>
+              )}
             </div>
             
-            <button type="submit" className="w-full bg-zinc-950 text-white font-bold text-lg py-4 rounded-2xl active:scale-[0.98] transition-all shadow-md hover:bg-zinc-800">
-              Inizia Turno
-            </button>
+            <div className="w-full relative pt-2">
+              {/* Effetto alone dietro il bottone coerente con la Home */}
+              <div className="absolute inset-x-0 bottom-0 top-2 bg-white/20 blur-2xl rounded-full opacity-60 z-0 pointer-events-none"></div>
+              
+              <button 
+                type="submit" 
+                className="relative z-10 w-full bg-white text-black font-semibold text-[17px] py-4 rounded-full active:scale-[0.98] transition-transform"
+              >
+                Inizia Turno
+              </button>
+            </div>
           </form>
         </div>
+        
       </div>
     );
   }
