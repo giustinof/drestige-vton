@@ -83,7 +83,7 @@ export async function POST(req) {
         product_id: productId,
         url: publicUrl,
         type: 'processed',
-        // angle: angle 
+        angle: angle 
       }]);
 
     if (dbError) throw dbError;

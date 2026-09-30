@@ -124,14 +124,14 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     e.target.value = null; 
   };
 
-  // 4. Salvataggio e Avvio AI Sequenziale
+  // 4. Salvataggio Istantaneo e Avvio AI Sequenziale (Stagno)
   const handleSave = async () => {
     if (!formData.category_id) return alert("Devi selezionare una categoria.");
     if (productImages.length === 0) return alert("Aggiungi almeno una foto del prodotto.");
 
     setIsSaving(true);
     try {
-      // Creazione prodotto a DB
+      // 1. Creazione prodotto a DB (Velocissimo)
       const { data: newProduct, error: productError } = await supabase
         .from('products')
         .insert([{
@@ -146,109 +146,94 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
       if (productError) throw productError;
       const productId = newProduct.id;
 
-      // Upload function
-      const uploadImageToStorage = async (file, type, angle = 'none') => {
-        const fileExt = file.name.split('.').pop();
-        const fileName = `${productId}_${type}_${angle}_${Date.now()}.${fileExt}`;
-        const filePath = `${productId}/${fileName}`;
-        
-        const { error } = await supabase.storage.from('product-images').upload(filePath, file);
-        if (error) throw error;
-        
-        const { data: { publicUrl } } = supabase.storage.from('product-images').getPublicUrl(filePath);
-        return publicUrl;
-      };
+      // 2. CHIUDIAMO SUBITO L'INTERFACCIA (Il magazziniere può continuare a lavorare)
+      onClose(); 
 
-      const tagUrl = await uploadImageToStorage(initialTagFile, 'tag');
-      
-      const productUploadPromises = productImages.map(img => uploadImageToStorage(img.file, 'raw_item', img.angle));
-      const productUrls = await Promise.all(productUploadPromises);
+      // 3. PROCESSO IN BACKGROUND (Upload pesanti + AI)
+      const runBackgroundTasks = async () => {
+        try {
+          const uploadImageToStorage = async (file, type, angle = 'none') => {
+            const fileExt = file.name.split('.').pop();
+            const fileName = `${productId}_${type}_${angle}_${Date.now()}.${fileExt}`;
+            const filePath = `${productId}/${fileName}`;
+            
+            const { error } = await supabase.storage.from('product-images').upload(filePath, file);
+            if (error) throw error;
+            
+            const { data: { publicUrl } } = supabase.storage.from('product-images').getPublicUrl(filePath);
+            return publicUrl;
+          };
 
-      const imageRecords = [
-        { product_id: productId, url: tagUrl, type: 'tag' },
-        ...productUrls.map((url, index) => ({ product_id: productId, url, type: 'raw_item' }))
-      ];
-
-      const { error: imagesError } = await supabase.from('product_images').insert(imageRecords);
-      if (imagesError) throw imagesError;
-
-      onClose(); // Chiudiamo subito il pannello!
-
-      // --- ELABORAZIONE AI SEQUENZIALE (ANTI RATE-LIMIT) ---
-      const processAI = async () => {
-        for (let index = 0; index < productImages.length; index++) {
-          const capturedImage = productImages[index];
-          const garmentUrl = productUrls[index];
+          const tagUrl = await uploadImageToStorage(initialTagFile, 'tag');
           
-          try {
-            if (isAccessory) {
-              // --- ROUTE PHOTOROOM (Accessori) ---
-              console.log(`[Photoroom] Avvio elaborazione accessorio: ${capturedImage.angle}`);
-              
-              const response = await fetch('/api/generate-product-bg', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  productId: productId,
-                  garmentImageUrl: garmentUrl,
-                  angle: capturedImage.angle
-                })
-              });
+          const productUploadPromises = productImages.map(img => uploadImageToStorage(img.file, 'raw_item', img.angle));
+          const productUrls = await Promise.all(productUploadPromises);
 
-              const contentType = response.headers.get("content-type");
-              if (!response.ok) {
-                if (contentType && contentType.includes("application/json")) {
-                  const errData = await response.json();
-                  throw new Error(errData.error);
-                }
-                throw new Error(`Errore Server Photoroom: ${response.status}`);
-              }
-              const result = await response.json();
-              console.log(`[Photoroom] Successo per ${capturedImage.angle}:`, result.url);
+          const imageRecords = [
+            { product_id: productId, url: tagUrl, type: 'tag' },
+            ...productUrls.map((url, index) => ({ product_id: productId, url, type: 'raw_item' }))
+          ];
 
-            } else {
-              // --- ROUTE GENLOOK (Abbigliamento VTON) ---
-              const poseInfo = modelPoses.find(p => p.angle === capturedImage.angle);
-              if (poseInfo) {
-                console.log(`[Genlook] Avvio elaborazione capo: ${capturedImage.angle}`);
-                
-                const response = await fetch('/api/generate-genlook', {
+          await supabase.from('product_images').insert(imageRecords);
+
+          // --- ELABORAZIONE AI PARALLELA (MOLTO PIÙ VELOCE E SICURA) ---
+          const aiPromises = productImages.map(async (capturedImage, index) => {
+            const garmentUrl = productUrls[index];
+            
+            try {
+              if (isAccessory) {
+                console.log(`[Photoroom] Avvio elaborazione accessorio: ${capturedImage.angle}`);
+                const response = await fetch('/api/generate-product-bg', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    productId: productId,
-                    modelImageUrl: poseInfo.base_image_url,
-                    garmentImageUrl: garmentUrl,
-                    angle: capturedImage.angle,
-                    workerId: workerId
-                  })
+                  body: JSON.stringify({ productId, garmentImageUrl: garmentUrl, angle: capturedImage.angle })
                 });
 
-                const contentType = response.headers.get("content-type");
-                if (!response.ok) {
-                  if (contentType && contentType.includes("application/json")) {
-                    const errData = await response.json();
-                    throw new Error(errData.error);
-                  }
-                  throw new Error(`Errore Server Genlook: ${response.status}`);
-                }
+                if (!response.ok) throw new Error(`Errore Server Photoroom: ${response.status}`);
                 const result = await response.json();
-                console.log(`[Genlook] Successo per ${capturedImage.angle}:`, result.url);
+                console.log(`[Photoroom] ✅ Successo per ${capturedImage.angle}:`, result.url);
+
+              } else {
+                const poseInfo = modelPoses.find(p => p.angle === capturedImage.angle);
+                if (poseInfo) {
+                  console.log(`[Genlook] Avvio elaborazione capo: ${capturedImage.angle}`);
+                  const response = await fetch('/api/generate-genlook', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      productId, 
+                      modelImageUrl: poseInfo.base_image_url, 
+                      garmentImageUrl: garmentUrl, 
+                      angle: capturedImage.angle, 
+                      workerId
+                    })
+                  });
+
+                  if (!response.ok) throw new Error(`Errore Server Genlook: ${response.status}`);
+                  const result = await response.json();
+                  console.log(`[Genlook] ✅ Successo per ${capturedImage.angle}:`, result.url);
+                }
               }
+            } catch (err) {
+              console.error(`[AI] ❌ Errore tollerato su angolo ${capturedImage.angle}. Dettagli:`, err);
             }
-          } catch (err) {
-            console.error(`Errore critico su angolo ${capturedImage.angle}:`, err);
-          }
+          });
+
+          // Lanciamo tutte le chiamate contemporaneamente e le attendiamo
+          await Promise.all(aiPromises);
+          console.log("[AI] Elaborazione parallela in background terminata.");
+          
+        } catch (bgError) {
+          console.error("Errore critico nel processo in background:", bgError);
         }
-        console.log("Tutte le elaborazioni AI completate per questo prodotto.");
       };
       
-      processAI();
+      // Avviamo il blocco background senza aspettare (no await)
+      runBackgroundTasks();
 
     } catch (error) {
-      console.error("Errore salvataggio:", error);
-      alert("Errore durante il salvataggio.");
-    } finally {
+      console.error("Errore salvataggio prodotto base:", error);
+      alert("Errore durante la creazione del prodotto.");
       setIsSaving(false);
     }
   };
