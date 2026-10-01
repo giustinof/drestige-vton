@@ -147,12 +147,12 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
   // 4. Salvataggio Istantaneo e Avvio AI Sequenziale (Stagno)
   const handleSave = async () => {
     if (!formData.category_id) return alert("Devi selezionare una categoria.");
-    if (productImages.length === 0) return alert("Aggiungi almeno una foto.");
-    if (!selectedSeason) return alert("Seleziona una stagione.");
+    if (productImages.length === 0) return alert("Aggiungi almeno una foto del prodotto.");
+    if (!selectedSeason) return alert("Devi selezionare una stagione.");
 
-    setIsSaving(true);
+    setIsSaving(true); // Disabilita il bottone e mostra il caricamento
     try {
-      // 1. Creazione prodotto a DB (Velocissimo)
+      // 1. Creazione prodotto a DB (Istanza base)
       const { data: newProduct, error: productError } = await supabase
         .from('products')
         .insert([{
@@ -162,52 +162,59 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
           model_code: formData.model_code,
           variant_code: formData.variant_code,
           ean: formData.ean,
-          status: 'processing', // Mostrerà l'icona "Elaborazione AI" in InventoryView
+          status: 'processing',
         }]).select().single();
 
       if (productError) throw productError;
       const productId = newProduct.id;
 
-      // 2. Prepariamo il FormData con TUTTI i file per l'API
-      const payload = new FormData();
-      payload.append('productId', productId);
-      payload.append('workerId', workerId);
-      payload.append('isAccessory', isAccessory);
-      
+      // 2. Upload diretto dal Client a Supabase Storage (Nessun limite di peso!)
+      const uploadFile = async (file, type, angle = 'none') => {
+        const fileExt = file.name.split('.').pop();
+        const fileName = `${productId}_${type}_${angle}_${Date.now()}.${fileExt}`;
+        const filePath = `${productId}/${fileName}`;
+        
+        const { error } = await supabase.storage.from('product-images').upload(filePath, file);
+        if (error) throw error;
+        
+        const { data: { publicUrl } } = supabase.storage.from('product-images').getPublicUrl(filePath);
+        return { url: publicUrl, type, angle };
+      };
+
+      // Avviamo tutti gli upload contemporaneamente per fare prima
+      const uploadPromises = [
+        uploadFile(initialTagFile, 'tag', 'none'),
+        ...productImages.map(img => uploadFile(img.file, 'raw_item', img.angle))
+      ];
+
+      // Aspettiamo che TUTTE le foto siano fisicamente su Supabase
+      const uploadedImages = await Promise.all(uploadPromises);
+
+      // 3. Ora avvisiamo Vercel passandogli SOLO I LINK (payload leggerissimo JSON)
       const categoryName = categories.find(c => c.id === formData.category_id)?.name || '';
-      payload.append('categoryName', categoryName);
       
-      // Aggiungiamo il cartellino
-      payload.append('tagImage', initialTagFile);
-
-      // Aggiungiamo le pose del modello (se è abbigliamento)
-      if (!isAccessory) {
-         payload.append('modelPoses', JSON.stringify(modelPoses));
-      }
-
-      // Aggiungiamo tutte le immagini scattate
-      productImages.forEach((img, i) => {
-        payload.append(`productImage_${i}`, img.file);
-        payload.append(`productAngle_${i}`, img.angle);
-      });
-
-      // 3. CHIUDIAMO LA MODALE SUBITO
-      onClose();
-
-      // 4. CHIAMATA ALL'API CHE NON DEVE ESSERE UCCISA DAL BROWSER
-      // Usiamo 'keepalive: true' per dire al browser di non uccidere la request
-      // anche se l'utente cambia tab (utile su mobile)
+      // Chiamata non bloccante per l'AI
       fetch('/api/process-product-pipeline', {
         method: 'POST',
-        body: payload,
-        keepalive: true 
-      }).then(res => {
-         if(!res.ok) console.error("Pipeline fallita lato server");
-      }).catch(err => console.error("Rete caduta durante pipeline:", err));
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productId,
+          workerId,
+          isAccessory,
+          categoryName,
+          modelCode: formData.model_code,
+          variantCode: formData.variant_code,
+          uploadedImages // Passiamo array di oggetti { url, type, angle }
+        }),
+        keepalive: true // Mantiene viva la richiesta anche se si smonta il componente
+      }).catch(err => console.error("Errore avvio AI in background:", err));
+
+      // 4. Upload Finito. Chiudiamo l'interfaccia, il magazziniere può fare altro!
+      onClose(); 
 
     } catch (error) {
       console.error("Errore salvataggio:", error);
-      alert("Errore durante la creazione.");
+      alert("Errore durante l'upload. Controlla la connessione e riprova.");
       setIsSaving(false);
     }
   };
