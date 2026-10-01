@@ -48,18 +48,21 @@ Il tuo obiettivo è generare un Titolo SEO ottimizzato e una Descrizione persuas
 Devi seguire ESATTAMENTE questo stile e tono di voce di esempio:
 
 Titolo Esempio: 3Juin Sandali Donna in Vernice Nera con Tacco Stiletto e Fiocchi
-Descrizione Esempio: Sandali da donna firmati 3Juin, modello Megan 095, realizzati artigianalmente in Italia in 100% pregiata pelle lucida in finitura nera. Il design elegante e femminile presenta una raffinata punta aperta, un delicato cinturino alla caviglia e romantiche applicazioni di fiocchi. La calzatura è slanciata da un tacco stiletto ed è rifinita con una classica suola in cuoio. Modello MEGAN095ILLY-MAR.
+Descrizione Esempio: Sandali da donna firmati 3Juin, realizzati artigianalmente in Italia in 100% pregiata pelle lucida in finitura nera. Il design elegante e femminile presenta una raffinata punta aperta, un delicato cinturino alla caviglia e romantiche applicazioni di fiocchi. La calzatura è slanciata da un tacco stiletto ed è rifinita con una classica suola in cuoio. Modello MEGAN095ILLY-MAR.
 
-REGOLE:
-1. Individua il Brand (se visibile sul cartellino o sull'oggetto), i colori, i materiali apparenti e i dettagli distintivi (es. fiocchi, colletto, zip, tacco, logo).
-2. Usa un linguaggio elegante, sartoriale e orientato alla vendita.
-3. Il titolo deve essere conciso e incisivo (Brand, Categoria, Dettagli principali, Colore).
-4. Restituisci la risposta SOLO in formato JSON valido con due chiavi esatte: "title" e "description". Senza markdown o altre scritte.`;
+REGOLE TASSATIVE:
+1. NON INSERIRE MAI taglie, misure, codici a barre (EAN) o codici variante nella descrizione.
+2. NON INSERIRE il codice modello all'inizio o in mezzo alla descrizione.
+3. Il codice modello (${modelCode}) DEVE ESSERE INSERITO SOLO ALLA FINE ASSOLUTA della descrizione, usando esattamente la frase: "Modello ${modelCode}."
+4. Individua il Brand (se visibile), i colori, i materiali apparenti e i dettagli distintivi (es. zip, tacco, loghi).
+5. Usa un linguaggio elegante, sartoriale e orientato alla vendita.
+6. Il titolo deve essere conciso e incisivo (Brand, Categoria, Dettagli principali, Colore).
+7. Restituisci la risposta SOLO in formato JSON valido con due chiavi esatte: "title" e "description". Senza markdown o altre scritte.`;
 
         const messages = [
           { role: "system", content: systemPrompt },
           { role: "user", content: [
-              { type: "text", text: `Dati Prodotto forniti dal magazzino:\n- Categoria: ${categoryName}\n- Codice Modello: ${modelCode}\n- Codice Variante: ${variantCode}\n\nAnalizza le seguenti foto e scrivi titolo e descrizione in formato JSON.` },
+              { type: "text", text: `Dati Prodotto:\n- Categoria: ${categoryName}\n- Codice Modello da inserire alla fine: ${modelCode}\n\nAnalizza le seguenti foto e scrivi titolo e descrizione in formato JSON.` },
               // Includiamo il tag per aiutare a leggere Brand e composizioni testuali
               { type: "image_url", image_url: { url: tagUrl } },
               // Limitiamo le foto raw a 3 per ottimizzare i token di GPT-4o
