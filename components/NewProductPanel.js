@@ -147,147 +147,67 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
   // 4. Salvataggio Istantaneo e Avvio AI Sequenziale (Stagno)
   const handleSave = async () => {
     if (!formData.category_id) return alert("Devi selezionare una categoria.");
-    if (productImages.length === 0) return alert("Aggiungi almeno una foto del prodotto.");
+    if (productImages.length === 0) return alert("Aggiungi almeno una foto.");
+    if (!selectedSeason) return alert("Seleziona una stagione.");
 
     setIsSaving(true);
     try {
-      // 1. Creazione prodotto a DB con la stagione selezionata
+      // 1. Creazione prodotto a DB (Velocissimo)
       const { data: newProduct, error: productError } = await supabase
         .from('products')
         .insert([{
           worker_id: workerId,
           category_id: formData.category_id,
-          collection_id: selectedSeason, // Inserimento della stagione selezionata
+          collection_id: selectedSeason,
           model_code: formData.model_code,
           variant_code: formData.variant_code,
           ean: formData.ean,
-          status: 'processing',
+          status: 'processing', // Mostrerà l'icona "Elaborazione AI" in InventoryView
         }]).select().single();
 
       if (productError) throw productError;
       const productId = newProduct.id;
 
-      // 2. CHIUDIAMO SUBITO L'INTERFACCIA (Il magazziniere può continuare a lavorare)
-      onClose(); 
-
-      // 3. PROCESSO IN BACKGROUND (Upload pesanti + AI)
-      const runBackgroundTasks = async () => {
-        try {
-          const uploadImageToStorage = async (file, type, angle = 'none') => {
-            const fileExt = file.name.split('.').pop();
-            const fileName = `${productId}_${type}_${angle}_${Date.now()}.${fileExt}`;
-            const filePath = `${productId}/${fileName}`;
-            
-            const { error } = await supabase.storage.from('product-images').upload(filePath, file);
-            if (error) throw error;
-            
-            const { data: { publicUrl } } = supabase.storage.from('product-images').getPublicUrl(filePath);
-            return publicUrl;
-          };
-
-          const tagUrl = await uploadImageToStorage(initialTagFile, 'tag');
-          
-          const productUploadPromises = productImages.map(img => uploadImageToStorage(img.file, 'raw_item', img.angle));
-          const productUrls = await Promise.all(productUploadPromises);
-
-          const imageRecords = [
-            { product_id: productId, url: tagUrl, type: 'tag' },
-            ...productUrls.map((url, index) => ({ product_id: productId, url, type: 'raw_item' }))
-          ];
-
-          await supabase.from('product_images').insert(imageRecords);
-
-          // === NUOVO: GENERAZIONE SEO AI (DeepSeek / GPT) ===
-          try {
-            console.log("[SEO AI] Avvio generazione testi...");
-            const categoryName = categories.find(c => c.id === formData.category_id)?.name || 'Abbigliamento';
-            
-            const seoResponse = await fetch('/api/generate-seo', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                modelCode: formData.model_code,
-                variantCode: formData.variant_code,
-                categoryName: categoryName,
-                imageUrls: productUrls, // Passiamo le foto appena caricate
-                tagUrl: tagUrl
-              })
-            });
-
-            if (seoResponse.ok) {
-              const seoData = await seoResponse.json();
-              console.log("[SEO AI] ✅ Testi generati:", seoData);
-              
-              // Aggiorniamo il prodotto nel database con titolo e descrizione
-              await supabase.from('products').update({
-                title: seoData.title,
-                description: seoData.description
-              }).eq('id', productId);
-            } else {
-              console.error("[SEO AI] Errore dal server");
-            }
-          } catch (seoErr) {
-            console.error("[SEO AI] ❌ Errore tollerato:", seoErr);
-          }
-
-          // --- ELABORAZIONE AI PARALLELA (MOLTO PIÙ VELOCE E SICURA) ---
-          const aiPromises = productImages.map(async (capturedImage, index) => {
-            const garmentUrl = productUrls[index];
-            
-            try {
-              if (isAccessory) {
-                console.log(`[Photoroom] Avvio elaborazione accessorio: ${capturedImage.angle}`);
-                const response = await fetch('/api/generate-product-bg', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ productId, garmentImageUrl: garmentUrl, angle: capturedImage.angle })
-                });
-
-                if (!response.ok) throw new Error(`Errore Server Photoroom: ${response.status}`);
-                const result = await response.json();
-                console.log(`[Photoroom] ✅ Successo per ${capturedImage.angle}:`, result.url);
-
-              } else {
-                const poseInfo = modelPoses.find(p => p.angle === capturedImage.angle);
-                if (poseInfo) {
-                  console.log(`[Genlook] Avvio elaborazione capo: ${capturedImage.angle}`);
-                  const response = await fetch('/api/generate-genlook', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      productId, 
-                      modelImageUrl: poseInfo.base_image_url, 
-                      garmentImageUrl: garmentUrl, 
-                      angle: capturedImage.angle, 
-                      workerId
-                    })
-                  });
-
-                  if (!response.ok) throw new Error(`Errore Server Genlook: ${response.status}`);
-                  const result = await response.json();
-                  console.log(`[Genlook] ✅ Successo per ${capturedImage.angle}:`, result.url);
-                }
-              }
-            } catch (err) {
-              console.error(`[AI] ❌ Errore tollerato su angolo ${capturedImage.angle}. Dettagli:`, err);
-            }
-          });
-
-          // Lanciamo tutte le chiamate contemporaneamente e le attendiamo
-          await Promise.all(aiPromises);
-          console.log("[AI] Elaborazione parallela in background terminata.");
-          
-        } catch (bgError) {
-          console.error("Errore critico nel processo in background:", bgError);
-        }
-      };
+      // 2. Prepariamo il FormData con TUTTI i file per l'API
+      const payload = new FormData();
+      payload.append('productId', productId);
+      payload.append('workerId', workerId);
+      payload.append('isAccessory', isAccessory);
       
-      // Avviamo il blocco background senza aspettare (no await)
-      runBackgroundTasks();
+      const categoryName = categories.find(c => c.id === formData.category_id)?.name || '';
+      payload.append('categoryName', categoryName);
+      
+      // Aggiungiamo il cartellino
+      payload.append('tagImage', initialTagFile);
+
+      // Aggiungiamo le pose del modello (se è abbigliamento)
+      if (!isAccessory) {
+         payload.append('modelPoses', JSON.stringify(modelPoses));
+      }
+
+      // Aggiungiamo tutte le immagini scattate
+      productImages.forEach((img, i) => {
+        payload.append(`productImage_${i}`, img.file);
+        payload.append(`productAngle_${i}`, img.angle);
+      });
+
+      // 3. CHIUDIAMO LA MODALE SUBITO
+      onClose();
+
+      // 4. CHIAMATA ALL'API CHE NON DEVE ESSERE UCCISA DAL BROWSER
+      // Usiamo 'keepalive: true' per dire al browser di non uccidere la request
+      // anche se l'utente cambia tab (utile su mobile)
+      fetch('/api/process-product-pipeline', {
+        method: 'POST',
+        body: payload,
+        keepalive: true 
+      }).then(res => {
+         if(!res.ok) console.error("Pipeline fallita lato server");
+      }).catch(err => console.error("Rete caduta durante pipeline:", err));
 
     } catch (error) {
-      console.error("Errore salvataggio prodotto base:", error);
-      alert("Errore durante la creazione del prodotto.");
+      console.error("Errore salvataggio:", error);
+      alert("Errore durante la creazione.");
       setIsSaving(false);
     }
   };
