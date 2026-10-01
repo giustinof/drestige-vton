@@ -2,7 +2,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { supabase } from '../../../lib/supabase';
 import NewProductPanel from '../../../components/NewProductPanel';
-import { Plus, PackageOpen, X, Sparkles } from 'lucide-react';
+import Sidebar from '../../../components/Sidebar';
+import InventoryView from '../../../components/InventoryView';
+import SeasonsView from '../../../components/SeasonsView';
+import { Plus, Menu } from 'lucide-react';
 
 export default function AppHome() {
   const [worker, setWorker] = useState(null);
@@ -10,15 +13,15 @@ export default function AppHome() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   
+  // Stati di Navigazione e Menu
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [currentView, setCurrentView] = useState('inventory'); // 'inventory' | 'my-products' | 'seasons'
+  const [refreshKey, setRefreshKey] = useState(0); // Usato per forzare l'aggiornamento della lista prodotti
+  
   const [categories, setCategories] = useState([]);
   const [capturedTagFile, setCapturedTagFile] = useState(null);
   const [isNewProductPanelOpen, setIsNewProductPanelOpen] = useState(false);
   
-  const [products, setProducts] = useState([]);
-  const [selectedProduct, setSelectedProduct] = useState(null);
-  
-  const [fullscreenImage, setFullscreenImage] = useState(null);
-
   const tagCaptureRef = useRef(null);
 
   useEffect(() => {
@@ -42,32 +45,6 @@ export default function AppHome() {
     initApp();
   }, []);
 
-  useEffect(() => {
-    const fetchProducts = async () => {
-      if (!worker) return;
-
-      const { data: prods, error: prodsError } = await supabase
-        .from('products')
-        .select(`
-          *,
-          product_images (
-            id,
-            url,
-            type
-          )
-        `)
-        .order('created_at', { ascending: false });
-
-      if (prodsError) {
-        console.error("Errore caricamento prodotti:", prodsError);
-      } else if (prods) {
-        setProducts(prods);
-      }
-    };
-
-    fetchProducts();
-  }, [worker]);
-
   const handleLogin = async (e) => {
     e.preventDefault();
     setError('');
@@ -87,6 +64,12 @@ export default function AppHome() {
     }
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem('drestige_worker');
+    setWorker(null);
+    setIsSidebarOpen(false);
+  };
+
   const handleInitialTagCapture = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -96,17 +79,21 @@ export default function AppHome() {
     e.target.value = null; 
   };
 
-  const handlePanelClose = async () => {
+  const handlePanelClose = () => {
     setIsNewProductPanelOpen(false);
-    if (worker) {
-         const { data } = await supabase
-        .from('products')
-        .select(`*, product_images(id, url, type)`)
-        .eq('worker_id', worker.id)
-        .order('created_at', { ascending: false });
-        if(data) setProducts(data);
-    }
+    // Cambiamo la refreshKey per dire a InventoryView di ricaricare i dati dal database
+    setRefreshKey(prev => prev + 1);
   }
+
+  // Helper per il titolo della pagina in base alla vista
+  const getPageTitle = () => {
+    switch(currentView) {
+      case 'inventory': return 'Tutto l\'inventario';
+      case 'my-products': return 'I Tuoi Prodotti';
+      case 'seasons': return 'Gestione Stagioni';
+      default: return '';
+    }
+  };
 
   if (loading) return (
     <div className="min-h-screen bg-zinc-50 flex items-center justify-center text-zinc-900 font-medium">
@@ -117,37 +104,21 @@ export default function AppHome() {
     </div>
   );
 
+  // ---------- SCHERMATA LOGIN ----------
   if (!worker) {
     return (
       <div className="min-h-screen bg-[#09090b] relative flex flex-col items-center justify-center p-6 font-sans text-white overflow-hidden">
-        
-        {/* Sfondo: Richiamo sottile dell'immagine della sfilata per continuità visiva */}
+        {/* Schermata di login originale intatta... */}
         <div className="absolute top-0 left-0 right-0 h-[50vh] z-0 pointer-events-none">
-          <div 
-            className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-100"
-            style={{ backgroundImage: "url('/bg.jpg')" }}
-          />
+          <div className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-100" style={{ backgroundImage: "url('/bg.jpg')" }} />
           <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#09090b]/80 to-[#09090b]" />
         </div>
-
         <div className="relative z-10 flex-1 flex flex-col justify-center max-w-sm mx-auto w-full mb-12">
-          
-          {/* Logo (Stesso della landing page) */}
           <div className="w-24 h-24 mb-8 mx-auto">
-            <img 
-              src="/logo.png" 
-              alt="Drestige Logo" 
-              className="w-full h-full object-contain drop-shadow-lg"
-            />
+            <img src="/logo.png" alt="Drestige Logo" className="w-full h-full object-contain drop-shadow-lg" />
           </div>
-          
-          <h2 className="text-[28px] font-bold mb-2 text-white tracking-tight text-center">
-            Accedi a V-TON
-          </h2>
-          <p className="text-zinc-400 text-[15px] mb-8 text-center px-4 font-medium">
-            Inserisci il tuo codice magazziniere.
-          </p>
-          
+          <h2 className="text-[28px] font-bold mb-2 text-white tracking-tight text-center">Accedi a V-TON</h2>
+          <p className="text-zinc-400 text-[15px] mb-8 text-center px-4 font-medium">Inserisci il tuo codice magazziniere.</p>
           <form onSubmit={handleLogin} className="space-y-6 w-full">
             <div>
               <input
@@ -158,110 +129,83 @@ export default function AppHome() {
                 onChange={(e) => setInputCode(e.target.value.toUpperCase())}
                 required
               />
-              {error && (
-                <p className="text-red-400 text-sm mt-3 text-center font-medium animate-in fade-in slide-in-from-top-1">
-                  {error}
-                </p>
-              )}
+              {error && <p className="text-red-400 text-sm mt-3 text-center font-medium animate-in fade-in slide-in-from-top-1">{error}</p>}
             </div>
-            
             <div className="w-full relative pt-2">
-              {/* Effetto alone dietro il bottone coerente con la Home */}
               <div className="absolute inset-x-0 bottom-0 top-2 bg-white/20 blur-2xl rounded-full opacity-60 z-0 pointer-events-none"></div>
-              
-              <button 
-                type="submit" 
-                className="relative z-10 w-full bg-white text-black font-semibold text-[17px] py-4 rounded-full active:scale-[0.98] transition-transform"
-              >
+              <button type="submit" className="relative z-10 w-full bg-white text-black font-semibold text-[17px] py-4 rounded-full active:scale-[0.98] transition-transform">
                 Accedi
               </button>
             </div>
           </form>
         </div>
-        
       </div>
     );
   }
 
+  // ---------- SCHERMATA PRINCIPALE ----------
   return (
-    <div className="min-h-screen bg-zinc-50 pb-32 relative">
-      {/* Header Glassmorphism */}
-      <header className="px-6 pt-12 pb-4 sticky top-0 z-10 backdrop-blur-xl bg-zinc-50/80 border-b border-zinc-200/50 flex justify-between items-end">
-        <div>
-          <p className="text-sm font-medium text-zinc-500 mb-1">Bentornato, {worker.name}</p>
-          <h1 className="text-2xl font-black text-zinc-900 tracking-tight">Il tuo inventario</h1>
+    <div className="min-h-screen bg-zinc-50 relative">
+      <Sidebar 
+        isOpen={isSidebarOpen} 
+        onClose={() => setIsSidebarOpen(false)} 
+        currentView={currentView}
+        setCurrentView={setCurrentView}
+        onLogout={handleLogout}
+      />
+
+      {/* Header con Hamburger */}
+      <header className="px-6 pt-6 pb-4 sticky top-0 z-10 backdrop-blur-xl bg-zinc-50/80 border-b border-zinc-200/50 flex justify-between items-end">
+        <div className="flex gap-4 items-center w-full">
+          {/* Pulsante Hamburger */}
+          <button 
+            onClick={() => setIsSidebarOpen(true)}
+            className="p-2 -ml-2 text-zinc-800 bg-white shadow-sm border border-zinc-200 rounded-full active:scale-95 transition-transform"
+          >
+            <Menu size={24} />
+          </button>
+          
+          <div>
+            <p className="text-sm font-medium text-zinc-500 mb-0.5">Bentornato, {worker.name}</p>
+            <h1 className="text-2xl font-black text-zinc-900 tracking-tight">{getPageTitle()}</h1>
+          </div>
         </div>
       </header>
 
-      <main className="p-4 max-w-3xl mx-auto">
-        {products.length === 0 ? (
-          <div className="flex flex-col items-center justify-center text-center py-32 opacity-70">
-            <div className="w-20 h-20 bg-zinc-100 rounded-full flex items-center justify-center mb-4">
-              <PackageOpen size={36} className="text-zinc-400" strokeWidth={1.5} />
-            </div>
-            <p className="font-semibold text-zinc-900 text-lg">Nessun prodotto elaborato</p>
-            <p className="text-sm text-zinc-500 mt-2 max-w-[200px]">Tocca il pulsante + per scattare la foto a un cartellino.</p>
-          </div>
+      {/* Rendering Condizionale dei Contenuti in base al Menu */}
+      <main>
+        {currentView === 'seasons' ? (
+          <SeasonsView />
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            {products.map(product => {
-              const processedImages = product.product_images?.filter(img => img.type === 'processed') || [];
-              const rawImages = product.product_images?.filter(img => img.type === 'raw_item') || [];
-              const coverImage = processedImages.length > 0 ? processedImages[0].url : (rawImages.length > 0 ? rawImages[0].url : null);
-              
-              return (
-                <div 
-                  key={product.id} 
-                  className="bg-white rounded-[1.25rem] p-2 shadow-sm border border-zinc-100 cursor-pointer active:scale-[0.98] transition-transform"
-                  onClick={() => setSelectedProduct(product)}
-                >
-                  <div className="aspect-[3/4] rounded-xl bg-zinc-100 mb-3 overflow-hidden relative border border-zinc-50">
-                    {coverImage ? (
-                      <img src={coverImage} alt={product.model_code} className="w-full h-full object-cover" />
-                    ) : (
-                      <div className="w-full h-full flex flex-col items-center justify-center text-zinc-300">
-                        <PackageOpen size={24} />
-                      </div>
-                    )}
-                    
-                    {/* Badge AI Elaborazione */}
-                    {product.status === 'processing' && processedImages.length === 0 && (
-                        <div className="absolute inset-0 bg-zinc-900/20 backdrop-blur-[2px] flex items-center justify-center">
-                            <span className="flex items-center gap-1.5 text-indigo-50 text-xs font-bold px-3 py-1.5 bg-indigo-600/90 rounded-full shadow-lg shadow-indigo-900/20">
-                              <Sparkles size={12} className="animate-pulse" /> Elaborazione AI
-                            </span>
-                        </div>
-                    )}
-                  </div>
-                  <div className="px-2 pb-1">
-                    <p className="text-sm font-bold text-zinc-900 leading-tight truncate">{product.model_code || 'Senza Codice'}</p>
-                    <p className="text-xs text-zinc-500 mt-0.5 truncate">{product.variant_code}</p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <InventoryView 
+            viewMode={currentView} 
+            workerId={worker.id} 
+            refreshKey={refreshKey}
+          />
         )}
       </main>
 
-      {/* Pulsante Fluttuante (FAB) migliorato */}
-      <div className="fixed bottom-8 left-0 right-0 flex justify-center z-20 pointer-events-none">
-        <input 
-          type="file" 
-          accept="image/*" 
-          capture="environment" 
-          className="hidden" 
-          ref={tagCaptureRef} 
-          onChange={handleInitialTagCapture} 
-        />
-        <button 
-          onClick={() => tagCaptureRef.current.click()} 
-          className="pointer-events-auto w-16 h-16 bg-zinc-950 text-white rounded-full flex items-center justify-center shadow-[0_8px_30px_rgb(0,0,0,0.25)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.4)] active:scale-90 transition-all border-4 border-zinc-50"
-        >
-          <Plus size={32} strokeWidth={2.5} />
-        </button>
-      </div>
+      {/* FAB Pulsante Fluttuante (Nascondiamo il "+" se siamo nelle stagioni) */}
+      {currentView !== 'seasons' && (
+        <div className="fixed bottom-8 left-0 right-0 flex justify-center z-20 pointer-events-none animate-in slide-in-from-bottom-8">
+          <input 
+            type="file" 
+            accept="image/*" 
+            capture="environment" 
+            className="hidden" 
+            ref={tagCaptureRef} 
+            onChange={handleInitialTagCapture} 
+          />
+          <button 
+            onClick={() => tagCaptureRef.current.click()} 
+            className="pointer-events-auto w-16 h-16 bg-zinc-950 text-white rounded-full flex items-center justify-center shadow-[0_8px_30px_rgb(0,0,0,0.25)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.4)] active:scale-90 transition-all border-4 border-zinc-50"
+          >
+            <Plus size={32} strokeWidth={2.5} />
+          </button>
+        </div>
+      )}
 
+      {/* Modale Nuovo Prodotto */}
       {isNewProductPanelOpen && capturedTagFile && (
         <NewProductPanel 
           onClose={handlePanelClose} 
@@ -269,99 +213,6 @@ export default function AppHome() {
           categories={categories}
           initialTagFile={capturedTagFile} 
         />
-      )}
-
-      {/* Modale Dettaglio Prodotto */}
-      {selectedProduct && (
-        <div className="fixed inset-0 z-40 flex flex-col bg-zinc-50 animate-in slide-in-from-bottom-4 duration-200">
-            <header className="px-6 py-4 border-b border-zinc-200/50 flex justify-between items-center bg-white/80 backdrop-blur-md sticky top-0 z-10">
-                <div>
-                    <h2 className="text-xl font-black text-zinc-900 leading-tight">{selectedProduct.model_code}</h2>
-                    <p className="text-sm text-zinc-500 font-medium">Var: {selectedProduct.variant_code}</p>
-                </div>
-                <button 
-                  onClick={() => setSelectedProduct(null)} 
-                  className="w-10 h-10 bg-zinc-100 rounded-full flex items-center justify-center text-zinc-600 active:scale-90 transition-transform"
-                >
-                    <X size={20} strokeWidth={2.5} />
-                </button>
-            </header>
-            
-            <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8 max-w-3xl mx-auto w-full">
-                
-                {/* Sezione V-TON */}
-                <section>
-                    <div className="flex items-center gap-2 mb-4">
-                      <Sparkles size={18} className="text-indigo-500" />
-                      <h3 className="font-bold text-lg text-zinc-900">Virtual Try-On (AI)</h3>
-                    </div>
-                    
-                    {selectedProduct.product_images?.filter(img => img.type === 'processed').length > 0 ? (
-                         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                            {selectedProduct.product_images.filter(img => img.type === 'processed').map((img, i) => (
-                                <div 
-                                  key={i} 
-                                  className="aspect-[3/4] bg-white rounded-2xl overflow-hidden shadow-sm border border-zinc-100 cursor-zoom-in active:opacity-75 transition-opacity"
-                                  onClick={() => setFullscreenImage(img.url)}
-                                >
-                                    <img src={img.url} className="w-full h-full object-cover" />
-                                </div>
-                            ))}
-                        </div>
-                    ) : (
-                         <div className="p-6 bg-white border border-zinc-100 rounded-2xl text-center flex flex-col items-center justify-center gap-2">
-                             <div className="w-12 h-12 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mb-2">
-                               <Sparkles size={24} />
-                             </div>
-                             <p className="text-sm font-medium text-zinc-600">Nessuna foto generata</p>
-                             <p className="text-xs text-zinc-400">Le immagini V-TON appariranno qui a fine elaborazione.</p>
-                         </div>
-                    )}
-                </section>
-
-                {/* Sezione Scatti Originali */}
-                <section>
-                    <h3 className="font-bold text-lg mb-4 text-zinc-900">Scatti Originali Magazzino</h3>
-                    {/* Hide-scrollbar className personalizzata utile qui (da aggiungere in globals.css se non presente: .hide-scrollbar::-webkit-scrollbar { display: none; }) */}
-                    <div className="flex overflow-x-auto gap-3 pb-4 snap-x hide-scrollbar">
-                         {selectedProduct.product_images?.filter(img => img.type !== 'processed').map((img, i) => (
-                             <div 
-                                key={i} 
-                                className="flex-shrink-0 w-36 aspect-[3/4] bg-white rounded-2xl overflow-hidden snap-start relative cursor-zoom-in border border-zinc-200 active:opacity-75 transition-opacity"
-                                onClick={() => setFullscreenImage(img.url)}
-                             >
-                                <img src={img.url} className="w-full h-full object-cover" />
-                                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-zinc-900/80 via-zinc-900/30 to-transparent p-3 pt-8">
-                                     <p className="text-white text-[10px] tracking-wider font-bold uppercase">{img.type.replace('_', ' ')}</p>
-                                </div>
-                             </div>
-                         ))}
-                    </div>
-                </section>
-            </div>
-        </div>
-      )}
-
-      {/* OVERLAY FOTO A SCHERMO INTERO (Più immersivo) */}
-      {fullscreenImage && (
-        <div 
-          className="fixed inset-0 z-50 bg-zinc-950/95 flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-200"
-          onClick={() => setFullscreenImage(null)}
-        >
-          <button 
-            onClick={() => setFullscreenImage(null)} 
-            className="absolute top-6 right-6 w-12 h-12 bg-white/10 rounded-full flex items-center justify-center text-white hover:bg-white/20 active:scale-90 transition-all z-50 backdrop-blur-lg"
-          >
-            <X size={24} strokeWidth={2.5} />
-          </button>
-          
-          <img 
-            src={fullscreenImage} 
-            alt="Dettaglio a schermo intero" 
-            className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl" 
-            onClick={(e) => e.stopPropagation()} 
-          />
-        </div>
       )}
     </div>
   );

@@ -116,7 +116,7 @@ export default function LandingPage() {
           {/* Istruzioni iOS nascoste elegantemente se non installato */}
           {isIOS && !isInstalled && (
              <p className="text-[14px] text-white font-medium">
-               Vuoi l&apos;app nativa? <span className="text-zinc-400 font-normal">Tocca Condividi e "Aggiungi alla Home"</span>
+               Vuoi l&apos;app nativa? <span className="text-zinc-400 font-normal">Tocca Condividi e &quot;Aggiungi alla Home&quot;</span>
              </p>
           )}
 

@@ -19,6 +19,10 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     category_id: ''
   });
   
+  // --- STATI STAGIONI ---
+  const [seasons, setSeasons] = useState([]);
+  const [selectedSeason, setSelectedSeason] = useState('');
+
   const [isOcrProcessing, setIsOcrProcessing] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -33,6 +37,22 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     { angle: 'detail', label: 'Dettaglio / Logo' },
     { angle: 'sole', label: 'Suola / Interno' }
   ];
+
+  // 0. Fetch Stagioni
+  useEffect(() => {
+    const fetchSeasons = async () => {
+      const { data, error } = await supabase
+        .from('collections')
+        .select('*')
+        .order('created_at', { ascending: false });
+      
+      if (!error && data && data.length > 0) {
+        setSeasons(data);
+        setSelectedSeason(data[0].id); // Seleziona la prima di default
+      }
+    };
+    fetchSeasons();
+  }, []);
 
   // 1. OCR Iniziale
   useEffect(() => {
@@ -131,12 +151,13 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
 
     setIsSaving(true);
     try {
-      // 1. Creazione prodotto a DB (Velocissimo)
+      // 1. Creazione prodotto a DB con la stagione selezionata
       const { data: newProduct, error: productError } = await supabase
         .from('products')
         .insert([{
           worker_id: workerId,
           category_id: formData.category_id,
+          collection_id: selectedSeason, // Inserimento della stagione selezionata
           model_code: formData.model_code,
           variant_code: formData.variant_code,
           ean: formData.ean,
@@ -175,6 +196,39 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
           ];
 
           await supabase.from('product_images').insert(imageRecords);
+
+          // === NUOVO: GENERAZIONE SEO AI (DeepSeek / GPT) ===
+          try {
+            console.log("[SEO AI] Avvio generazione testi...");
+            const categoryName = categories.find(c => c.id === formData.category_id)?.name || 'Abbigliamento';
+            
+            const seoResponse = await fetch('/api/generate-seo', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                modelCode: formData.model_code,
+                variantCode: formData.variant_code,
+                categoryName: categoryName,
+                imageUrls: productUrls, // Passiamo le foto appena caricate
+                tagUrl: tagUrl
+              })
+            });
+
+            if (seoResponse.ok) {
+              const seoData = await seoResponse.json();
+              console.log("[SEO AI] ✅ Testi generati:", seoData);
+              
+              // Aggiorniamo il prodotto nel database con titolo e descrizione
+              await supabase.from('products').update({
+                title: seoData.title,
+                description: seoData.description
+              }).eq('id', productId);
+            } else {
+              console.error("[SEO AI] Errore dal server");
+            }
+          } catch (seoErr) {
+            console.error("[SEO AI] ❌ Errore tollerato:", seoErr);
+          }
 
           // --- ELABORAZIONE AI PARALLELA (MOLTO PIÙ VELOCE E SICURA) ---
           const aiPromises = productImages.map(async (capturedImage, index) => {
@@ -257,6 +311,28 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
 
         <div className="flex-1 overflow-y-auto p-6 space-y-8 pb-32">
           
+          {/* SEZIONE STAGIONE (Nuova, orizzontale scrollabile) */}
+          {seasons.length > 0 && (
+            <div className="space-y-3">
+              <h3 className="font-bold text-gray-900">Stagione <span className="text-red-500">*</span></h3>
+              <div className="flex overflow-x-auto gap-2 pb-2 hide-scrollbar snap-x">
+                {seasons.map((season) => (
+                  <button
+                    key={season.id}
+                    onClick={() => setSelectedSeason(season.id)}
+                    className={`flex-shrink-0 snap-start px-5 py-2.5 rounded-xl text-sm font-bold transition-all border ${
+                      selectedSeason === season.id
+                        ? 'bg-black text-white border-black shadow-md'
+                        : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
+                    }`}
+                  >
+                    {season.collection}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Sezione Dati OCR */}
           <div className="space-y-4">
             <div className="flex justify-between items-end mb-2">
@@ -437,9 +513,9 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
         <div className="absolute bottom-0 left-0 right-0 p-6 bg-white border-t border-gray-50 shadow-[0_-10px_20px_rgb(0,0,0,0.02)]">
           <button 
             onClick={handleSave}
-            disabled={isSaving || isOcrProcessing || (!formData.category_id)}
+            disabled={isSaving || isOcrProcessing || !formData.category_id || !selectedSeason}
             className={`w-full py-4 rounded-2xl font-black text-white text-lg transition-all ${
-              isSaving || isOcrProcessing || (!formData.category_id) ? 'bg-gray-200 text-gray-400' : 'bg-black active:scale-95 shadow-lg'
+              isSaving || isOcrProcessing || !formData.category_id || !selectedSeason ? 'bg-gray-200 text-gray-400' : 'bg-black active:scale-95 shadow-lg'
             }`}
           >
             {isSaving ? (
