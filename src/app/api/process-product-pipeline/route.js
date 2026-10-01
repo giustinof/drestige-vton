@@ -72,7 +72,7 @@ REGOLE TASSATIVE:
         ];
 
         const response = await openai.chat.completions.create({
-          model: "gpt-4o",
+          model: "gpt-4o-mini",
           messages: messages,
           response_format: { type: "json_object" },
           max_tokens: 500,
