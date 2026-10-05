@@ -1,7 +1,7 @@
 "use client"
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, Check, Download, AlertTriangle, EyeOff, Clock, Share2 } from 'lucide-react';
+import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import PullToRefresh from 'react-simple-pull-to-refresh';
 import JSZip from 'jszip';
@@ -40,7 +40,9 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const [isDeleting, setIsDeleting] = useState(false);
   
   const [isSharing, setIsSharing] = useState(false); 
-  const [isDownloading, setIsDownloading] = useState(false); // Stato nuovo per il download ZIP
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [isReparsing, setIsReparsing] = useState(false);
+  const [isBulkReparsing, setIsBulkReparsing] = useState(false); // Stato per il reparse multiplo
 
   const touchTimeout = useRef(null);
   const isLongPress = useRef(false);
@@ -97,7 +99,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
   const handleProductClick = (product) => { if (isLongPress.current) return; window.history.pushState({ modal: 'product' }, ''); setSelectedProduct(product); };
   const closeProductModal = () => { if (window.history.state?.modal === 'product') window.history.back(); else setSelectedProduct(null); };
-  const openFullscreenImage = (url) => { window.history.pushState({ modal: 'photo' }, ''); setFullscreenImage(url); };
+  const openFullscreenImage = (img) => { window.history.pushState({ modal: 'photo' }, ''); setFullscreenImage(img); };
   const closeFullscreenImage = () => { if (window.history.state?.modal === 'photo') window.history.back(); else setFullscreenImage(null); };
   const openEditModal = (product) => { window.history.pushState({ modal: 'edit' }, ''); setEditForm({ model_code: product.model_code || '', variant_code: product.variant_code || '', ean: product.ean || '', collection_id: product.collection_id || '', title: product.title || '', description: product.description || '' }); setEditingProduct(product); };
   const closeEditModal = () => { if (window.history.state?.modal === 'edit') window.history.back(); else setEditingProduct(null); };
@@ -111,6 +113,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   }, [contextMenu.visible]);
 
   const toggleSelection = (productId) => { setSelectedItemIds(prev => prev.includes(productId) ? prev.filter(id => id !== productId) : [...prev, productId]); if (window.navigator?.vibrate) window.navigator.vibrate(50); };
+  
   const handleContextMenuTrigger = (x, y, product) => {
     if (isSelectionMode) toggleSelection(product.id);
     else {
@@ -135,7 +138,134 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   };
   const handleImgTouchStart = (e, img) => { isImgLongPress.current = false; imgTouchTimeout.current = setTimeout(() => { isImgLongPress.current = true; toggleImageEnabled(img); }, 500); };
   const handleImgTouchEnd = () => { if (imgTouchTimeout.current) clearTimeout(imgTouchTimeout.current); };
-  const handleImgClick = (img) => { if (isImgLongPress.current) return; openFullscreenImage(img.url); };
+  const handleImgClick = (img) => { if (isImgLongPress.current) return; openFullscreenImage(img); };
+
+  // --- FILTRAGGIO (Spostato in alto per poterlo usare nel Select All) ---
+  const displayedProducts = products.filter(p => {
+    if (searchQuery && !p.model_code?.toLowerCase().includes(searchQuery.toLowerCase()) && !p.ean?.includes(searchQuery)) return false;
+    if (activeFilter === 'downloaded') return p.status === 'downloaded';
+    
+    if (p.status === 'downloaded') return false;
+    const processed = p.product_images?.filter(img => img.type === 'processed').length || 0;
+    const raws = p.product_images?.filter(img => img.type !== 'processed').length || 0;
+    
+    if (activeFilter === 'processing' && (p.status !== 'processing' || processed > 0)) return false;
+    if (activeFilter === 'done' && processed === 0) return false;
+    if (activeFilter === 'no-photo' && processed === 0 && raws === 0) return false;
+    
+    return true;
+  });
+
+  // --- SELEZIONA TUTTI I PRODOTTI VISIBILI ---
+  const handleSelectAll = () => {
+    if (selectedItemIds.length === displayedProducts.length && displayedProducts.length > 0) {
+      setSelectedItemIds([]);
+      setIsSelectionMode(false);
+    } else {
+      setSelectedItemIds(displayedProducts.map(p => p.id));
+    }
+  };
+
+  // --- REPARSE SINGOLO ---
+  const handleReparseTag = async () => {
+    if (!fullscreenImage || !selectedProduct) return;
+    setIsReparsing(true);
+    try {
+      const response = await fetch(fullscreenImage.url);
+      const blob = await response.blob();
+      const formData = new FormData();
+      formData.append('image', blob, 'tag_image.jpg');
+      
+      const apiResponse = await fetch('/api/parse-tag', { method: 'POST', body: formData });
+      if (!apiResponse.ok) throw new Error('Errore durante il parse');
+      
+      const parsedData = await apiResponse.json();
+      
+      if (parsedData.model_code) {
+        const { error } = await supabase.from('products').update({
+          model_code: parsedData.model_code,
+          variant_code: parsedData.variant_code || '',
+          ean: parsedData.ean || ''
+        }).eq('id', selectedProduct.id);
+
+        if (!error) {
+          const updatedProduct = { ...selectedProduct, model_code: parsedData.model_code, variant_code: parsedData.variant_code || '', ean: parsedData.ean || '' };
+          setSelectedProduct(updatedProduct);
+          setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
+          alert(`✅ Dati etichetta corretti!\n\nModello: ${parsedData.model_code}\nVariante: ${parsedData.variant_code}\nEAN: ${parsedData.ean}`);
+        } else alert('Errore durante il salvataggio sul database.');
+      } else alert('Nessun dato valido rilevato dall\'Intelligenza Artificiale.');
+    } catch (err) {
+      console.error(err);
+      alert('Errore di comunicazione con il server AI.');
+    } finally {
+      setIsReparsing(false);
+    }
+  };
+
+  // --- REPARSE IN BULK ---
+  const handleBulkReparse = async () => {
+    if (selectedItemIds.length === 0) return;
+    setIsBulkReparsing(true);
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const productId of selectedItemIds) {
+      const product = products.find(p => p.id === productId);
+      if (!product) continue;
+
+      // Cerca la prima immagine originale
+      const rawImage = product.product_images?.find(img => img.type !== 'processed');
+      if (!rawImage) {
+        failCount++;
+        continue;
+      }
+
+      try {
+        const response = await fetch(rawImage.url);
+        const blob = await response.blob();
+        
+        const formData = new FormData();
+        formData.append('image', blob, 'tag_image.jpg');
+        
+        const apiResponse = await fetch('/api/parse-tag', { method: 'POST', body: formData });
+        if (!apiResponse.ok) throw new Error('Errore API');
+        
+        const parsedData = await apiResponse.json();
+        
+        if (parsedData.model_code) {
+          const { error } = await supabase.from('products').update({
+            model_code: parsedData.model_code,
+            variant_code: parsedData.variant_code || '',
+            ean: parsedData.ean || ''
+          }).eq('id', product.id);
+
+          if (!error) {
+            setProducts(prev => prev.map(p => p.id === product.id ? { 
+              ...p, 
+              model_code: parsedData.model_code, 
+              variant_code: parsedData.variant_code || '', 
+              ean: parsedData.ean || '' 
+            } : p));
+            successCount++;
+          } else {
+            failCount++;
+          }
+        } else {
+          failCount++;
+        }
+      } catch (err) {
+        console.error(err);
+        failCount++;
+      }
+    }
+
+    setIsBulkReparsing(false);
+    alert(`Rielaborazione Completata!\n\n✅ Successi: ${successCount}\n❌ Falliti: ${failCount}`);
+    setSelectedItemIds([]);
+    setIsSelectionMode(false);
+  };
 
   const handleShareProduct = async () => {
     if (!navigator.share) return alert("Browser non supporta la condivisione rapida.");
@@ -154,7 +284,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     try { await navigator.share(shareData); } catch (err) {} finally { setIsSharing(false); }
   };
 
-  // --- LOGICA DOWNLOAD ZIP ---
   const handleBulkDownload = async () => {
     if (selectedItemIds.length === 0) return;
     setIsDownloading(true);
@@ -168,15 +297,12 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         const product = products.find(p => p.id === productId);
         if (!product) continue;
 
-        // Filtra SOLO foto AI-Generated (processed) e NON disabilitate
         const validImages = product.product_images?.filter(img => img.type === 'processed' && img.enabled !== false) || [];
         if (validImages.length === 0) continue; 
 
-        // Recupera nome cartella stagione
         const seasonName = product.collections?.collection || 'SenzaStagione';
         const folder = zip.folder(seasonName);
 
-        // Pulisce il nome rimuovendo caratteri non standard per i file
         const safeModel = (product.model_code || 'MOD').replace(/[^a-zA-Z0-9_-]/g, '');
         const safeVariant = (product.variant_code || '').replace(/[^a-zA-Z0-9_-]/g, '');
         const baseFileName = `${safeModel}${safeVariant}`;
@@ -201,20 +327,12 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         return;
       }
 
-      // Generazione e salvataggio ZIP
       const content = await zip.generateAsync({ type: 'blob' });
       saveAs(content, `Export_Drestige_${new Date().toISOString().split('T')[0]}.zip`);
 
-      // 1. Aggiorna stato in products a "downloaded"
       await supabase.from('products').update({ status: 'downloaded' }).in('id', downloadedProductIds);
+      await supabase.from('downloads').insert({ worker_id: workerId, product_images: downloadedImageIds });
 
-      // 2. Registra Log nella tabella downloads
-      await supabase.from('downloads').insert({
-        worker_id: workerId,
-        product_images: downloadedImageIds
-      });
-
-      // 3. Aggiorna lo stato locale per nasconderli dalla UI (e resettare la selezione)
       setProducts(prev => prev.map(p => downloadedProductIds.includes(p.id) ? { ...p, status: 'downloaded' } : p));
       setSelectedItemIds([]);
       setIsSelectionMode(false);
@@ -254,27 +372,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     if (!error) { setProducts(prev => prev.map(p => { if (p.id === editingProduct.id) { const updatedCollection = seasons.find(s => s.id === editForm.collection_id) || p.collections; return { ...p, ...editForm, collections: updatedCollection }; } return p; })); closeEditModal(); } else alert("Errore");
   };
 
-  // --- LOGICA FILTRI AVANZATA ---
-  const displayedProducts = products.filter(p => {
-    if (searchQuery && !p.model_code?.toLowerCase().includes(searchQuery.toLowerCase()) && !p.ean?.includes(searchQuery)) return false;
-    
-    if (activeFilter === 'downloaded') {
-      // Selezionato "Scaricati", mostra SOLO quelli downloaded
-      return p.status === 'downloaded';
-    } else {
-      // Se NON è selezionato "Scaricati", NASCONDI sempre i downloaded dal resto dei filtri
-      if (p.status === 'downloaded') return false;
-
-      const processed = p.product_images?.filter(img => img.type === 'processed').length || 0;
-      const raws = p.product_images?.filter(img => img.type !== 'processed').length || 0;
-      
-      if (activeFilter === 'processing' && (p.status !== 'processing' || processed > 0)) return false;
-      if (activeFilter === 'done' && processed === 0) return false;
-      if (activeFilter === 'no-photo' && processed === 0 && raws === 0) return false;
-    }
-    return true;
-  });
-
   if (loading) return <SkeletonGrid />;
 
   return (
@@ -287,28 +384,44 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
           </div>
           <div className="flex items-center gap-1">
             <button 
+              onClick={handleSelectAll} 
+              className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white" 
+              title="Seleziona Tutti"
+            >
+              <CheckCheck size={22} strokeWidth={2} />
+            </button>
+            <button 
+              onClick={handleBulkReparse} 
+              disabled={isBulkReparsing || isDownloading}
+              className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" 
+              title="Rielabora Etichette AI"
+            >
+              {isBulkReparsing ? <Loader2 size={22} className="animate-spin" /> : <RefreshCw size={22} strokeWidth={2} />}
+            </button>
+            <button 
               onClick={handleBulkDownload} 
-              disabled={isDownloading}
+              disabled={isDownloading || isBulkReparsing}
               className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" 
               title="Scarica foto"
             >
               {isDownloading ? <Loader2 size={22} className="animate-spin" /> : <Download size={22} strokeWidth={2} />}
             </button>
-            <button onClick={() => openDeleteModal('bulk')} className="p-2.5 rounded-full hover:bg-indigo-500/50 text-indigo-100 hover:text-white active:scale-95 transition-all" title="Elimina"><Trash2 size={22} strokeWidth={2} /></button>
+            <button onClick={() => openDeleteModal('bulk')} disabled={isDownloading || isBulkReparsing} className="p-2.5 rounded-full hover:bg-indigo-500/50 text-indigo-100 hover:text-white active:scale-95 transition-all disabled:opacity-50" title="Elimina"><Trash2 size={22} strokeWidth={2} /></button>
           </div>
         </div>
       )}
 
       <PullToRefresh onRefresh={async () => await fetchData()} pullingContent={''} refreshingContent={<div className="flex justify-center p-4"><Loader2 className="animate-spin text-zinc-400" /></div>}>
         <div className="p-4 max-w-3xl mx-auto min-h-[70vh] relative">
-          {/* CONTATORE PRODOTTI TROVATI/FILTRATI */}
+          
           <div className="mb-4 px-1 flex items-center justify-between animate-in fade-in">
              <p className="text-sm font-semibold text-zinc-500">
                {displayedProducts.length} {displayedProducts.length === 1 ? 'prodotto' : 'prodotti'} {activeFilter === 'downloaded' ? 'in archivio' : 'trovati'}
              </p>
           </div>
+
           {displayedProducts.length === 0 ? (
-            <div className="flex flex-col items-center justify-center text-center py-32 opacity-70">
+            <div className="flex flex-col items-center justify-center text-center py-20 opacity-70">
               <div className="w-20 h-20 bg-zinc-100 rounded-full flex items-center justify-center mb-4"><PackageOpen size={36} className="text-zinc-400" strokeWidth={1.5} /></div>
               <p className="font-semibold text-zinc-900 text-lg">Nessun prodotto trovato</p>
             </div>
@@ -323,7 +436,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                 return (
                   <div key={product.id} className={`bg-white rounded-[1.25rem] p-2 shadow-sm border cursor-pointer active:scale-[0.98] transition-all select-none relative ${isSelected ? 'border-indigo-500 ring-2 ring-indigo-500 ring-offset-2' : 'border-zinc-100 hover:border-zinc-200'}`}
                     onClick={() => handleProductClick(product)} onContextMenu={(e) => handleRightClick(e, product)} onTouchStart={(e) => handleTouchStart(e, product)} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove} onTouchCancel={handleTouchEnd}>
-                    {isSelected && (<div className="absolute top-4 right-4 bg-indigo-600 text-white rounded-full p-1 z-10 shadow-md animate-in zoom-in-75"><Check size={16} strokeWidth={3} /></div>)}
+                    {isSelected && (<div className="absolute top-4 right-4 bg-indigo-600 text-white rounded-full p-1 z-1 shadow-md animate-in zoom-in-75"><Check size={16} strokeWidth={3} /></div>)}
                     <div className="aspect-[3/4] rounded-xl bg-zinc-100 mb-3 overflow-hidden relative border border-zinc-50">
                       {coverImage ? (<img src={coverImage} alt={product.model_code} className={`w-full h-full object-cover pointer-events-none transition-opacity ${isSelected ? 'opacity-80' : ''}`} />) : (<div className="w-full h-full flex flex-col items-center justify-center text-zinc-300"><PackageOpen size={24} /></div>)}
                       {product.status === 'processing' && processedImages.length === 0 && (
@@ -342,7 +455,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         </div>
       </PullToRefresh>
 
-      {/* MENU CONTESTUALE E MODALI ELIMINAZIONE / EDIT SONO INVARIATI E LI LASCIO COMPATTI PER SPAZIO */}
+      {/* MENU CONTESTUALE E MODALI */}
       {contextMenu.visible && (
         <div className="fixed z-50 bg-white/90 backdrop-blur-md rounded-2xl shadow-2xl border border-zinc-100 p-1.5 flex flex-col min-w-[160px] animate-in fade-in zoom-in-95 duration-150" style={{ top: contextMenu.y, left: contextMenu.x }} onClick={(e) => e.stopPropagation()}>
           <button className="flex items-center gap-3 px-3 py-2.5 text-sm font-semibold text-indigo-600 hover:bg-indigo-50 rounded-xl transition-colors text-left" onClick={() => { setIsSelectionMode(true); setSelectedItemIds([contextMenu.product.id]); setContextMenu({ visible: false, x: 0, y: 0, product: null }); }}><CheckSquare size={16} /> Seleziona</button>
@@ -391,7 +504,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         </div>
       )}
 
-      {/* MODALE DETTAGLIO PRODOTTO (CON CONDIVISIONE) */}
       {selectedProduct && !editingProduct && (
         <div className="fixed inset-0 z-40 flex flex-col bg-zinc-50 animate-in slide-in-from-bottom-4 duration-200">
             <header className="px-6 py-4 border-b border-zinc-200/50 flex justify-between items-start bg-white/80 backdrop-blur-md sticky top-0 z-10 shadow-sm">
@@ -490,13 +602,24 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         </div>
       )}
 
-      {/* OVERLAY FOTO A SCHERMO INTERO CON ZOOM PAN PINCH */}
       {fullscreenImage && (
         <div className="fixed inset-0 z-[80] bg-zinc-950/95 flex items-center justify-center backdrop-blur-md animate-in fade-in duration-200">
           <button onClick={closeFullscreenImage} className="absolute top-6 right-6 w-12 h-12 bg-white/10 rounded-full flex items-center justify-center text-white hover:bg-white/20 active:scale-90 transition-all z-[90] backdrop-blur-lg"><X size={24} strokeWidth={2.5} /></button>
+          
+          {fullscreenImage.type !== 'processed' && (
+             <button 
+               onClick={handleReparseTag} 
+               disabled={isReparsing}
+               className="absolute top-6 left-6 flex items-center gap-2 bg-indigo-600 text-white px-4 py-3 rounded-full hover:bg-indigo-700 active:scale-95 transition-all z-[90] shadow-lg disabled:opacity-50"
+             >
+               {isReparsing ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
+               {isReparsing ? 'Analisi in corso...' : 'Rianalizza Dati'}
+             </button>
+          )}
+
           <TransformWrapper initialScale={1} minScale={1} maxScale={4} centerOnInit>
             <TransformComponent wrapperClass="!w-full !h-full" contentClass="!w-full !h-full flex items-center justify-center">
-              <img src={fullscreenImage} alt="Fullscreen" className="max-w-full max-h-[90vh] object-contain shadow-2xl pointer-events-auto" />
+              <img src={fullscreenImage.url} alt="Fullscreen" className="max-w-full max-h-[90vh] object-contain shadow-2xl pointer-events-auto" />
             </TransformComponent>
           </TransformWrapper>
         </div>

@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
-// Inizializza il client con la baseURL di DeepSeek
 const openai = new OpenAI({
-  baseURL: 'https://api.deepseek.com', // Endpoint standard DeepSeek
+  baseURL: 'https://api.deepseek.com', 
   apiKey: process.env.DEEPSEEK_API_KEY,
 });
 
@@ -16,17 +15,17 @@ export async function POST(req) {
       return NextResponse.json({ error: 'Nessuna immagine fornita' }, { status: 400 });
     }
 
-    // Converti l'immagine in Base64
     const bytes = await image.arrayBuffer();
     const buffer = Buffer.from(bytes);
     const base64Image = buffer.toString('base64');
     const dataUrl = `data:${image.type};base64,${base64Image}`;
 
+    // PROMPT AGGIORNATO E OTTIMIZZATO PER I TUOI CARTELLINI
     const prompt = `
       Analizza questo cartellino di abbigliamento ed estrai i seguenti dati:
-      1. model_code: Il codice alfanumerico del modello principale (es. ZINCHAMW204802).
-      2. variant_code: Il codice della variante, spesso un numero corto vicino al codice modello o alla taglia (es. 015).
-      3. ean: Il codice a barre EAN/UPC a 13 cifre (rimuovi gli spazi). Se ce ne sono due, prendi quello associato al prezzo finale o in basso.
+      1. model_code: Il codice alfanumerico del modello principale. Nelle etichette standard si trova al centro, all'inizio della riga descrittiva (es. estrai "E4700VELOUR" da "E4700VELOUR SAB 39" oppure "E4723TALCP" da "E4723TALCP NER 36").
+      2. variant_code: Il codice della variante (solitamente il colore). È la parola o le 3 lettere situate subito dopo il codice modello e prima della taglia (es. estrai "SAB" per Sabbia, o "NER" per Nero e oro). ATTENZIONE: IGNORA I NUMERI alla fine della riga (es. 36, 39, ecc. sono la taglia, NON sono la variante).
+      3. ean: Il codice a barre numerico a 13 cifre (rimuovi gli spazi). Cerca quello in basso a destra (es. 8000000...).
       
       Restituisci SOLO un oggetto JSON valido in questo formato esatto, senza markdown o testo aggiuntivo:
       {
@@ -37,7 +36,6 @@ export async function POST(req) {
     `;
 
     const response = await openai.chat.completions.create({
-      // NOTA: Sostituisci con l'esatto nome del modello vision di DeepSeek se diverso (es. 'deepseek-vl')
       model: 'deepseek-chat', 
       messages: [
         {
@@ -48,13 +46,9 @@ export async function POST(req) {
           ],
         },
       ],
-      // Se il modello lo supporta, puoi forzare il JSON aggiungendo:
-      // response_format: { type: 'json_object' }
     });
 
     const responseText = response.choices[0].message.content;
-    
-    // Pulisce l'output da eventuali formattazioni markdown
     const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
     const parsedData = JSON.parse(cleanJson);
 
