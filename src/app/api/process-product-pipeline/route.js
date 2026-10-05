@@ -98,7 +98,8 @@ REGOLE TASSATIVE:
     // (In produzione su Vercel, req.headers.get('host') ci dà il dominio corretto)
     const protocol = req.headers.get('x-forwarded-proto') || 'http';
     const host = req.headers.get('host');
-    const baseUrl = `${protocol}://${host}`;
+    const isLocal = process.env.NODE_ENV === 'development';
+    const baseUrl = isLocal ? 'http://localhost:3000' : `${req.headers.get('x-forwarded-proto') || 'https'}://${req.headers.get('host')}`;
 
     const vtonPromises = rawImages.map(async (imgObj) => {
       try {

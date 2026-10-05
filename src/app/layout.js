@@ -36,7 +36,7 @@ export default function RootLayout({ children }) {
   return (
     <html
       lang="it"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased selection:bg-white/20 selection:text-white`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased selection:bg-indigo-500 selection:text-white`}
     >
       <head>
         {/* 3. ICONA PER LA HOME DI IOS */}
