@@ -301,6 +301,12 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
       <PullToRefresh onRefresh={async () => await fetchData()} pullingContent={''} refreshingContent={<div className="flex justify-center p-4"><Loader2 className="animate-spin text-zinc-400" /></div>}>
         <div className="p-4 max-w-3xl mx-auto min-h-[70vh] relative">
+          {/* CONTATORE PRODOTTI TROVATI/FILTRATI */}
+          <div className="mb-4 px-1 flex items-center justify-between animate-in fade-in">
+             <p className="text-sm font-semibold text-zinc-500">
+               {displayedProducts.length} {displayedProducts.length === 1 ? 'prodotto' : 'prodotti'} {activeFilter === 'downloaded' ? 'in archivio' : 'trovati'}
+             </p>
+          </div>
           {displayedProducts.length === 0 ? (
             <div className="flex flex-col items-center justify-center text-center py-32 opacity-70">
               <div className="w-20 h-20 bg-zinc-100 rounded-full flex items-center justify-center mb-4"><PackageOpen size={36} className="text-zinc-400" strokeWidth={1.5} /></div>
