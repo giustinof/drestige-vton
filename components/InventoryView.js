@@ -1,11 +1,49 @@
 "use client"
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck } from 'lucide-react';
+import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import PullToRefresh from 'react-simple-pull-to-refresh';
+import Cropper from 'react-easy-crop';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+
+// --- HELPER FUNCTION PER GENERARE L'IMMAGINE RITAGLIATA / CENTRATA ---
+const createImage = (url) =>
+  new Promise((resolve, reject) => {
+    const image = new Image();
+    image.addEventListener('load', () => resolve(image));
+    image.addEventListener('error', (error) => reject(error));
+    image.setAttribute('crossOrigin', 'anonymous');
+    image.src = url;
+  });
+
+async function getCroppedImg(imageSrc, pixelCrop, bgColor = '#ffffff') {
+  const image = await createImage(imageSrc);
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+
+  canvas.width = pixelCrop.width;
+  canvas.height = pixelCrop.height;
+
+  // Riempie lo sfondo di bianco (fondamentale per le foto ricentrate)
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Disegna l'immagine tenendo conto dello spostamento. 
+  // Se l'utente ha fatto zoom-out (spazio bianco), pixelCrop avrà coordinate negative.
+  ctx.drawImage(
+    image,
+    -pixelCrop.x,
+    -pixelCrop.y,
+    image.width,
+    image.height
+  );
+
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.95);
+  });
+}
 
 const SkeletonGrid = () => (
   <div className="grid grid-cols-2 md:grid-cols-3 gap-4 p-4 max-w-3xl mx-auto">
@@ -42,12 +80,23 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const [isSharing, setIsSharing] = useState(false); 
   const [isDownloading, setIsDownloading] = useState(false);
   const [isReparsing, setIsReparsing] = useState(false);
-  const [isBulkReparsing, setIsBulkReparsing] = useState(false); // Stato per il reparse multiplo
+  const [isBulkReparsing, setIsBulkReparsing] = useState(false);
+
+  // Stati per Editor Immagine (Crop/Center)
+  const [isEditingImage, setIsEditingImage] = useState(false);
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState(null);
+  const [isSavingImage, setIsSavingImage] = useState(false);
 
   const touchTimeout = useRef(null);
   const isLongPress = useRef(false);
   const imgTouchTimeout = useRef(null);
   const isImgLongPress = useRef(false);
+
+  const [swipeOffset, setSwipeOffset] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [modalTouchStartPos, setModalTouchStartPos] = useState(null);
 
   const fetchData = async () => {
     const { data: seasonsData } = await supabase.from('collections').select('*').order('created_at', { ascending: false });
@@ -88,10 +137,10 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   useEffect(() => {
     const handlePopState = (e) => {
       const state = e.state?.modal;
-      if (state === 'product') { setFullscreenImage(null); setEditingProduct(null); setDeleteModal(null); }
-      else if (state === 'edit') { setFullscreenImage(null); setSelectedProduct(null); setDeleteModal(null); }
+      if (state === 'product') { setFullscreenImage(null); setEditingProduct(null); setDeleteModal(null); setIsEditingImage(false); }
+      else if (state === 'edit') { setFullscreenImage(null); setSelectedProduct(null); setDeleteModal(null); setIsEditingImage(false); }
       else if (state === 'delete') { setDeleteModal(null); }
-      else { setFullscreenImage(null); setSelectedProduct(null); setEditingProduct(null); setDeleteModal(null); }
+      else { setFullscreenImage(null); setSelectedProduct(null); setEditingProduct(null); setDeleteModal(null); setIsEditingImage(false); }
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -99,8 +148,8 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
   const handleProductClick = (product) => { if (isLongPress.current) return; window.history.pushState({ modal: 'product' }, ''); setSelectedProduct(product); };
   const closeProductModal = () => { if (window.history.state?.modal === 'product') window.history.back(); else setSelectedProduct(null); };
-  const openFullscreenImage = (img) => { window.history.pushState({ modal: 'photo' }, ''); setFullscreenImage(img); };
-  const closeFullscreenImage = () => { if (window.history.state?.modal === 'photo') window.history.back(); else setFullscreenImage(null); };
+  const openFullscreenImage = (img) => { window.history.pushState({ modal: 'photo' }, ''); setFullscreenImage(img); setIsEditingImage(false); setZoom(1); };
+  const closeFullscreenImage = () => { if (window.history.state?.modal === 'photo') window.history.back(); else { setFullscreenImage(null); setIsEditingImage(false); } };
   const openEditModal = (product) => { window.history.pushState({ modal: 'edit' }, ''); setEditForm({ model_code: product.model_code || '', variant_code: product.variant_code || '', ean: product.ean || '', collection_id: product.collection_id || '', title: product.title || '', description: product.description || '' }); setEditingProduct(product); };
   const closeEditModal = () => { if (window.history.state?.modal === 'edit') window.history.back(); else setEditingProduct(null); };
   const openDeleteModal = (type, product = null) => { window.history.pushState({ modal: 'delete' }, ''); setDeleteModal({ type, product }); };
@@ -140,7 +189,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const handleImgTouchEnd = () => { if (imgTouchTimeout.current) clearTimeout(imgTouchTimeout.current); };
   const handleImgClick = (img) => { if (isImgLongPress.current) return; openFullscreenImage(img); };
 
-  // --- FILTRAGGIO (Spostato in alto per poterlo usare nel Select All) ---
   const displayedProducts = products.filter(p => {
     if (searchQuery && !p.model_code?.toLowerCase().includes(searchQuery.toLowerCase()) && !p.ean?.includes(searchQuery)) return false;
     if (activeFilter === 'downloaded') return p.status === 'downloaded';
@@ -156,7 +204,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     return true;
   });
 
-  // --- SELEZIONA TUTTI I PRODOTTI VISIBILI ---
   const handleSelectAll = () => {
     if (selectedItemIds.length === displayedProducts.length && displayedProducts.length > 0) {
       setSelectedItemIds([]);
@@ -166,7 +213,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     }
   };
 
-  // --- REPARSE SINGOLO ---
   const handleReparseTag = async () => {
     if (!fullscreenImage || !selectedProduct) return;
     setIsReparsing(true);
@@ -203,7 +249,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     }
   };
 
-  // --- REPARSE IN BULK ---
   const handleBulkReparse = async () => {
     if (selectedItemIds.length === 0) return;
     setIsBulkReparsing(true);
@@ -215,12 +260,8 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       const product = products.find(p => p.id === productId);
       if (!product) continue;
 
-      // Cerca la prima immagine originale
       const rawImage = product.product_images?.find(img => img.type !== 'processed');
-      if (!rawImage) {
-        failCount++;
-        continue;
-      }
+      if (!rawImage) { failCount++; continue; }
 
       try {
         const response = await fetch(rawImage.url);
@@ -249,22 +290,77 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
               ean: parsedData.ean || '' 
             } : p));
             successCount++;
-          } else {
-            failCount++;
-          }
-        } else {
-          failCount++;
-        }
-      } catch (err) {
-        console.error(err);
-        failCount++;
-      }
+          } else failCount++;
+        } else failCount++;
+      } catch (err) { failCount++; }
     }
 
     setIsBulkReparsing(false);
     alert(`Rielaborazione Completata!\n\n✅ Successi: ${successCount}\n❌ Falliti: ${failCount}`);
     setSelectedItemIds([]);
     setIsSelectionMode(false);
+  };
+
+  const handleSaveEditedImage = async () => {
+    setIsSavingImage(true);
+    try {
+      const blob = await getCroppedImg(fullscreenImage.url, croppedAreaPixels, '#ffffff');
+
+      // Ricava il path originale se esiste
+      const oldUrlParts = fullscreenImage.url.split('/product-images/');
+      const oldPath = oldUrlParts.length > 1 ? oldUrlParts[1] : null;
+
+      // Genera nuovo nome univoco
+      const newFileName = `${Date.now()}_edited.jpg`;
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('product-images')
+        .upload(newFileName, blob, { contentType: 'image/jpeg', upsert: false });
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('product-images')
+        .getPublicUrl(newFileName);
+
+      // Aggiorna database
+      const { error: dbError } = await supabase
+        .from('product_images')
+        .update({ url: publicUrl })
+        .eq('id', fullscreenImage.id);
+
+      if (dbError) throw dbError;
+
+      // Opzionale: Elimina vecchia foto dallo storage
+      if (oldPath) {
+        await supabase.storage.from('product-images').remove([oldPath]);
+      }
+
+      // Aggiorna lo stato UI locale
+      const updatedImg = { ...fullscreenImage, url: publicUrl };
+      setFullscreenImage(updatedImg);
+
+      setProducts(prev => prev.map(p => {
+        if (p.id === selectedProduct.id) {
+          return {
+            ...p,
+            product_images: p.product_images.map(i => i.id === updatedImg.id ? updatedImg : i)
+          };
+        }
+        return p;
+      }));
+
+      setSelectedProduct(prev => ({
+        ...prev,
+        product_images: prev.product_images.map(i => i.id === updatedImg.id ? updatedImg : i)
+      }));
+
+      setIsEditingImage(false);
+    } catch (e) {
+      console.error(e);
+      alert("Si è verificato un errore durante il salvataggio dell'immagine modificata.");
+    } finally {
+      setIsSavingImage(false);
+    }
   };
 
   const handleShareProduct = async () => {
@@ -370,6 +466,85 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     const { error } = await supabase.from('products').update({ model_code: editForm.model_code, variant_code: editForm.variant_code, ean: editForm.ean, collection_id: editForm.collection_id, title: editForm.title, description: editForm.description }).eq('id', editingProduct.id);
     setIsUpdating(false);
     if (!error) { setProducts(prev => prev.map(p => { if (p.id === editingProduct.id) { const updatedCollection = seasons.find(s => s.id === editForm.collection_id) || p.collections; return { ...p, ...editForm, collections: updatedCollection }; } return p; })); closeEditModal(); } else alert("Errore");
+  };
+
+  // --- LOGICA SWIPE MODALE PRODOTTI AVANZATA ---
+  const onModalTouchStart = (e) => {
+    if (e.target.closest('.overflow-x-auto') || e.target.closest('button')) return;
+    setModalTouchStartPos({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+    setIsDragging(true);
+  };
+
+  const onModalTouchMove = (e) => {
+    if (!modalTouchStartPos || !isDragging) return;
+    const currentX = e.touches[0].clientX;
+    const currentY = e.touches[0].clientY;
+    const diffX = currentX - modalTouchStartPos.x;
+    const diffY = currentY - modalTouchStartPos.y;
+
+    if (Math.abs(diffY) > Math.abs(diffX) && Math.abs(diffY) > 15) {
+      setIsDragging(false);
+      setSwipeOffset(0);
+      return;
+    }
+    setSwipeOffset(diffX);
+  };
+
+  const onModalTouchEnd = (e) => {
+    if (!modalTouchStartPos || !selectedProduct) {
+      setIsDragging(false);
+      setSwipeOffset(0);
+      return;
+    }
+    
+    setIsDragging(false);
+    const currentX = e.changedTouches[0].clientX;
+    const diffX = currentX - modalTouchStartPos.x;
+    const threshold = 80;
+    const currentIndex = displayedProducts.findIndex(p => p.id === selectedProduct.id);
+
+    if (diffX < -threshold && currentIndex < displayedProducts.length - 1) {
+      setSwipeOffset(-window.innerWidth);
+      setTimeout(() => {
+        setIsDragging(true); 
+        setSwipeOffset(window.innerWidth); 
+        setSelectedProduct(displayedProducts[currentIndex + 1]);
+        setTimeout(() => { setIsDragging(false); setSwipeOffset(0); }, 50);
+      }, 300);
+    } else if (diffX > threshold && currentIndex > 0) {
+      setSwipeOffset(window.innerWidth);
+      setTimeout(() => {
+        setIsDragging(true);
+        setSwipeOffset(-window.innerWidth);
+        setSelectedProduct(displayedProducts[currentIndex - 1]);
+        setTimeout(() => { setIsDragging(false); setSwipeOffset(0); }, 50);
+      }, 300);
+    } else {
+      setSwipeOffset(0);
+    }
+    setModalTouchStartPos(null);
+  };
+
+  const navigateImage = (direction, e) => {
+    e.stopPropagation();
+    if (!selectedProduct || !fullscreenImage) return;
+    
+    const processedImages = selectedProduct.product_images?.filter(img => img.type === 'processed') || [];
+    const rawImages = selectedProduct.product_images?.filter(img => img.type !== 'processed') || [];
+    const allImages = [...processedImages, ...rawImages];
+    
+    if (allImages.length <= 1) return;
+
+    const currentIndex = allImages.findIndex(img => img.id === fullscreenImage.id);
+    if (currentIndex === -1) return;
+    
+    if (direction === 'next') {
+      const nextIndex = (currentIndex + 1) % allImages.length;
+      setFullscreenImage(allImages[nextIndex]);
+    } else {
+      const prevIndex = (currentIndex - 1 + allImages.length) % allImages.length;
+      setFullscreenImage(allImages[prevIndex]);
+    }
   };
 
   if (loading) return <SkeletonGrid />;
@@ -505,125 +680,202 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       )}
 
       {selectedProduct && !editingProduct && (
-        <div className="fixed inset-0 z-40 flex flex-col bg-zinc-50 animate-in slide-in-from-bottom-4 duration-200">
-            <header className="px-6 py-4 border-b border-zinc-200/50 flex justify-between items-start bg-white/80 backdrop-blur-md sticky top-0 z-10 shadow-sm">
-                <div className="pr-2">
-                    <h2 className="text-2xl font-black text-zinc-900 leading-tight">{selectedProduct.model_code}</h2>
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mt-2">
-                      <p className="text-sm text-zinc-600 font-semibold bg-zinc-100 px-2 py-0.5 rounded-md border border-zinc-200">Var: {selectedProduct.variant_code}</p>
-                      {selectedProduct.collections && (
-                        <span className="flex items-center gap-1 text-xs font-bold px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md border border-indigo-100"><CalendarDays size={12} /> {selectedProduct.collections.collection}</span>
-                      )}
-                      {selectedProduct.created_at && (
-                        <span className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 bg-zinc-100 text-zinc-500 rounded-md border border-zinc-200"><Clock size={12} /> {new Date(selectedProduct.created_at).toLocaleString('it-IT', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
-                      )}
-                    </div>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button 
-                    onClick={handleShareProduct} 
-                    disabled={isSharing}
-                    className="w-10 h-10 bg-indigo-50 rounded-full flex items-center justify-center text-indigo-600 active:scale-90 transition-transform mt-1 disabled:opacity-50"
-                  >
-                    {isSharing ? <Loader2 size={18} className="animate-spin" /> : <Share2 size={18} strokeWidth={2.5} />}
-                  </button>
-                  <button onClick={closeProductModal} className="w-10 h-10 bg-zinc-100 rounded-full flex items-center justify-center text-zinc-600 active:scale-90 transition-transform mt-1"><X size={20} strokeWidth={2.5} /></button>
-                </div>
-            </header>
-            
-            <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8 max-w-3xl mx-auto w-full pb-32">
-                <section className="bg-white p-5 rounded-2xl border border-zinc-100 shadow-sm">
-                  <h3 className="font-black text-lg text-zinc-900 mb-2 leading-tight">{selectedProduct.title || "Generazione titolo in corso..."}</h3>
-                  <p className="text-sm text-zinc-600 leading-relaxed">{selectedProduct.description || "L'Intelligenza Artificiale sta scrivendo la descrizione di questo prodotto. Potrebbe volerci qualche istante."}</p>
-                </section>
+        <div className="fixed inset-0 z-40 bg-zinc-900/30 backdrop-blur-sm animate-in fade-in duration-200 overflow-hidden">
+          <div 
+            className={`w-full h-full bg-zinc-50 flex flex-col shadow-2xl ${isDragging ? '' : 'transition-transform duration-300 ease-out'}`}
+            style={{ transform: `translateX(${swipeOffset}px)` }}
+            onTouchStart={onModalTouchStart}
+            onTouchMove={onModalTouchMove}
+            onTouchEnd={onModalTouchEnd}
+          >
+              <header className="px-6 py-4 border-b border-zinc-200/50 flex justify-between items-start bg-white/80 backdrop-blur-md sticky top-0 z-10 shadow-sm">
+                  <div className="pr-2">
+                      <h2 className="text-2xl font-black text-zinc-900 leading-tight">{selectedProduct.model_code}</h2>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mt-2">
+                        <p className="text-sm text-zinc-600 font-semibold bg-zinc-100 px-2 py-0.5 rounded-md border border-zinc-200">Var: {selectedProduct.variant_code}</p>
+                        {selectedProduct.collections && (
+                          <span className="flex items-center gap-1 text-xs font-bold px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md border border-indigo-100"><CalendarDays size={12} /> {selectedProduct.collections.collection}</span>
+                        )}
+                        {selectedProduct.created_at && (
+                          <span className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 bg-zinc-100 text-zinc-500 rounded-md border border-zinc-200"><Clock size={12} /> {new Date(selectedProduct.created_at).toLocaleString('it-IT', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                        )}
+                      </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button 
+                      onClick={handleShareProduct} 
+                      disabled={isSharing}
+                      className="w-10 h-10 bg-indigo-50 rounded-full flex items-center justify-center text-indigo-600 active:scale-90 transition-transform mt-1 disabled:opacity-50"
+                    >
+                      {isSharing ? <Loader2 size={18} className="animate-spin" /> : <Share2 size={18} strokeWidth={2.5} />}
+                    </button>
+                    <button onClick={closeProductModal} className="w-10 h-10 bg-zinc-200/70 rounded-full flex items-center justify-center text-zinc-700 hover:bg-zinc-200 active:scale-90 transition-transform mt-1"><X size={20} strokeWidth={2.5} /></button>
+                  </div>
+              </header>
+              
+              <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8 max-w-3xl mx-auto w-full pb-32">
+                  <section className="bg-white p-5 rounded-2xl border border-zinc-100 shadow-sm">
+                    <h3 className="font-black text-lg text-zinc-900 mb-2 leading-tight">{selectedProduct.title || "Generazione titolo in corso..."}</h3>
+                    <p className="text-sm text-zinc-600 leading-relaxed">{selectedProduct.description || "L'Intelligenza Artificiale sta scrivendo la descrizione di questo prodotto. Potrebbe volerci qualche istante."}</p>
+                  </section>
 
-                <section>
-                    <div className="flex items-center gap-2 mb-4">
-                      <Sparkles size={18} className="text-indigo-500" />
-                      <h3 className="font-bold text-lg text-zinc-900">Virtual Try-On (AI)</h3>
-                    </div>
-                    {selectedProduct.product_images?.filter(img => img.type === 'processed').length > 0 ? (
-                         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                            {selectedProduct.product_images.filter(img => img.type === 'processed').map((img, i) => (
-                                <div 
+                  <section>
+                      <div className="flex items-center gap-2 mb-4">
+                        <Sparkles size={18} className="text-indigo-500" />
+                        <h3 className="font-bold text-lg text-zinc-900">Virtual Try-On (AI)</h3>
+                      </div>
+                      {selectedProduct.product_images?.filter(img => img.type === 'processed').length > 0 ? (
+                          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                              {selectedProduct.product_images.filter(img => img.type === 'processed').map((img, i) => (
+                                  <div 
+                                    key={i} 
+                                    className={`relative aspect-[3/4] bg-white rounded-2xl overflow-hidden shadow-sm border border-zinc-100 cursor-zoom-in active:opacity-75 transition-all select-none ${img.enabled === false ? 'grayscale opacity-50' : ''}`}
+                                    onClick={() => handleImgClick(img)}
+                                    onTouchStart={(e) => handleImgTouchStart(e, img)}
+                                    onTouchEnd={handleImgTouchEnd}
+                                    onTouchMove={handleImgTouchEnd}
+                                    onContextMenu={(e) => { e.preventDefault(); toggleImageEnabled(img); }}
+                                  >
+                                      <img src={img.url} className="w-full h-full object-cover pointer-events-none" />
+                                      {img.enabled === false && (
+                                        <div className="absolute inset-0 flex items-center justify-center backdrop-blur-[1px] bg-zinc-900/10">
+                                          <div className="bg-black/80 text-white p-2 rounded-full shadow-lg"><EyeOff size={24} /></div>
+                                        </div>
+                                      )}
+                                  </div>
+                              ))}
+                          </div>
+                      ) : (
+                          <div className="p-6 bg-white border border-zinc-100 rounded-2xl text-center flex flex-col items-center justify-center gap-2">
+                              <div className="w-12 h-12 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mb-2"><Sparkles size={24} /></div>
+                              <p className="text-sm font-medium text-zinc-600">Nessuna foto generata</p>
+                              <p className="text-xs text-zinc-400">Le immagini V-TON appariranno qui a fine elaborazione.</p>
+                          </div>
+                      )}
+                  </section>
+
+                  <section>
+                      <h3 className="font-bold text-lg mb-4 text-zinc-900">Scatti Originali</h3>
+                      <div className="flex overflow-x-auto gap-3 pb-4 snap-x hide-scrollbar">
+                          {selectedProduct.product_images?.filter(img => img.type !== 'processed').map((img, i) => (
+                              <div 
                                   key={i} 
-                                  className={`relative aspect-[3/4] bg-white rounded-2xl overflow-hidden shadow-sm border border-zinc-100 cursor-zoom-in active:opacity-75 transition-all select-none ${img.enabled === false ? 'grayscale opacity-50' : ''}`}
+                                  className={`flex-shrink-0 w-36 aspect-[3/4] bg-white rounded-2xl overflow-hidden snap-start relative cursor-zoom-in border border-zinc-200 active:opacity-75 transition-all select-none ${img.enabled === false ? 'grayscale opacity-50' : ''}`}
                                   onClick={() => handleImgClick(img)}
                                   onTouchStart={(e) => handleImgTouchStart(e, img)}
                                   onTouchEnd={handleImgTouchEnd}
                                   onTouchMove={handleImgTouchEnd}
                                   onContextMenu={(e) => { e.preventDefault(); toggleImageEnabled(img); }}
-                                >
-                                    <img src={img.url} className="w-full h-full object-cover pointer-events-none" />
-                                    {img.enabled === false && (
-                                      <div className="absolute inset-0 flex items-center justify-center backdrop-blur-[1px] bg-zinc-900/10">
-                                        <div className="bg-black/80 text-white p-2 rounded-full shadow-lg"><EyeOff size={24} /></div>
-                                      </div>
-                                    )}
-                                </div>
-                            ))}
-                        </div>
-                    ) : (
-                         <div className="p-6 bg-white border border-zinc-100 rounded-2xl text-center flex flex-col items-center justify-center gap-2">
-                             <div className="w-12 h-12 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mb-2"><Sparkles size={24} /></div>
-                             <p className="text-sm font-medium text-zinc-600">Nessuna foto generata</p>
-                             <p className="text-xs text-zinc-400">Le immagini V-TON appariranno qui a fine elaborazione.</p>
-                         </div>
-                    )}
-                </section>
-
-                <section>
-                    <h3 className="font-bold text-lg mb-4 text-zinc-900">Scatti Originali</h3>
-                    <div className="flex overflow-x-auto gap-3 pb-4 snap-x hide-scrollbar">
-                         {selectedProduct.product_images?.filter(img => img.type !== 'processed').map((img, i) => (
-                             <div 
-                                key={i} 
-                                className={`flex-shrink-0 w-36 aspect-[3/4] bg-white rounded-2xl overflow-hidden snap-start relative cursor-zoom-in border border-zinc-200 active:opacity-75 transition-all select-none ${img.enabled === false ? 'grayscale opacity-50' : ''}`}
-                                onClick={() => handleImgClick(img)}
-                                onTouchStart={(e) => handleImgTouchStart(e, img)}
-                                onTouchEnd={handleImgTouchEnd}
-                                onTouchMove={handleImgTouchEnd}
-                                onContextMenu={(e) => { e.preventDefault(); toggleImageEnabled(img); }}
-                             >
-                                <img src={img.url} className="w-full h-full object-cover pointer-events-none" />
-                                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-zinc-900/80 via-zinc-900/30 to-transparent p-3 pt-8 pointer-events-none">
-                                     <p className="text-white text-[10px] tracking-wider font-bold uppercase">{img.type.replace('_', ' ')}</p>
-                                </div>
-                                {img.enabled === false && (
-                                  <div className="absolute inset-0 flex items-center justify-center backdrop-blur-[1px] bg-zinc-900/10 pointer-events-none">
-                                    <div className="bg-black/80 text-white p-2 rounded-full shadow-lg"><EyeOff size={20} /></div>
+                              >
+                                  <img src={img.url} className="w-full h-full object-cover pointer-events-none" />
+                                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-zinc-900/80 via-zinc-900/30 to-transparent p-3 pt-8 pointer-events-none">
+                                      <p className="text-white text-[10px] tracking-wider font-bold uppercase">{img.type.replace('_', ' ')}</p>
                                   </div>
-                                )}
-                             </div>
-                         ))}
-                    </div>
-                </section>
-            </div>
+                                  {img.enabled === false && (
+                                    <div className="absolute inset-0 flex items-center justify-center backdrop-blur-[1px] bg-zinc-900/10 pointer-events-none">
+                                      <div className="bg-black/80 text-white p-2 rounded-full shadow-lg"><EyeOff size={20} /></div>
+                                    </div>
+                                  )}
+                              </div>
+                          ))}
+                      </div>
+                  </section>
+              </div>
+          </div>
         </div>
       )}
 
       {fullscreenImage && (
         <div className="fixed inset-0 z-[80] bg-zinc-950/95 flex items-center justify-center backdrop-blur-md animate-in fade-in duration-200">
-          <button onClick={closeFullscreenImage} className="absolute top-6 right-6 w-12 h-12 bg-white/10 rounded-full flex items-center justify-center text-white hover:bg-white/20 active:scale-90 transition-all z-[90] backdrop-blur-lg"><X size={24} strokeWidth={2.5} /></button>
           
-          {fullscreenImage.type !== 'processed' && (
-             <button 
-               onClick={handleReparseTag} 
-               disabled={isReparsing}
-               className="absolute top-6 left-6 flex items-center gap-2 bg-indigo-600 text-white px-4 py-3 rounded-full hover:bg-indigo-700 active:scale-95 transition-all z-[90] shadow-lg disabled:opacity-50"
-             >
-               {isReparsing ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
-               {isReparsing ? 'Analisi in corso...' : 'Rianalizza Dati'}
-             </button>
+          {/* VISTA EDITOR FOTO */}
+          {isEditingImage ? (
+            <div className="absolute inset-0 z-[100] bg-zinc-950 flex flex-col">
+              <div className="flex-1 relative bg-zinc-900/50">
+                <Cropper
+                  image={fullscreenImage.url}
+                  crop={crop}
+                  zoom={zoom}
+                  // Se tag -> Crop libero (undefined). Altrimenti proporzione esatta (3/4)
+                  aspect={fullscreenImage.type === 'tag' ? undefined : 3/4}
+                  // Permetti di zoomare in basso per fare spazio bianco se non è un tag
+                  minZoom={fullscreenImage.type === 'tag' ? 1 : 0.2}
+                  maxZoom={4}
+                  // Se non è un tag sblocchiamo i bordi in modo che l'utente possa trascinare l'oggetto e aggiungere spazio bianco
+                  restrictPosition={fullscreenImage.type === 'tag'}
+                  onCropChange={setCrop}
+                  onZoomChange={setZoom}
+                  onCropComplete={(croppedArea, pixels) => setCroppedAreaPixels(pixels)}
+                  style={{ containerStyle: { backgroundColor: fullscreenImage.type === 'tag' ? '#000000' : '#ffffff' } }}
+                />
+              </div>
+              <div className="h-32 bg-zinc-900 pb-safe flex flex-col justify-center px-6 gap-4 border-t border-zinc-800">
+                <div className="flex items-center gap-4 text-white">
+                  <span className="text-xs font-bold uppercase tracking-widest text-zinc-400">Zoom</span>
+                  <input 
+                    type="range" 
+                    min={fullscreenImage.type === 'tag' ? 1 : 0.2} 
+                    max={3} step={0.05} 
+                    value={zoom} 
+                    onChange={e => setZoom(e.target.value)} 
+                    className="flex-1 accent-indigo-500" 
+                  />
+                </div>
+                <div className="flex justify-between items-center">
+                  <button onClick={() => setIsEditingImage(false)} className="text-white font-medium px-4 py-2 hover:bg-white/10 rounded-xl transition-colors">Annulla</button>
+                  <button onClick={handleSaveEditedImage} disabled={isSavingImage} className="bg-indigo-600 text-white font-bold px-6 py-2.5 rounded-xl flex items-center gap-2 hover:bg-indigo-700 active:scale-95 transition-all">
+                    {isSavingImage ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
+                    {isSavingImage ? 'Salvataggio...' : 'Conferma'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* VISTA NORMALE FULLSCREEN */
+            <>
+              <button onClick={closeFullscreenImage} className="absolute top-6 right-6 w-12 h-12 bg-white/10 rounded-full flex items-center justify-center text-white hover:bg-white/20 active:scale-90 transition-all z-[90] backdrop-blur-lg"><X size={24} strokeWidth={2.5} /></button>
+              
+              <div className="absolute top-6 left-6 flex flex-col gap-3 z-[90]">
+                {fullscreenImage.type !== 'processed' && (
+                  <button 
+                    onClick={handleReparseTag} 
+                    disabled={isReparsing}
+                    className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-3 rounded-full hover:bg-indigo-700 active:scale-95 transition-all shadow-lg disabled:opacity-50"
+                  >
+                    {isReparsing ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
+                    {isReparsing ? 'Analisi in corso...' : 'Rianalizza Dati'}
+                  </button>
+                )}
+                <button 
+                  onClick={() => setIsEditingImage(true)}
+                  className="flex items-center gap-2 bg-white/10 backdrop-blur-lg text-white px-4 py-3 rounded-full hover:bg-white/20 active:scale-95 transition-all shadow-lg w-max"
+                >
+                  <Crop size={18} />
+                  {fullscreenImage.type === 'tag' ? 'Ritaglia Etichetta' : 'Centra / Ritaglia'}
+                </button>
+              </div>
+
+              {selectedProduct && selectedProduct.product_images?.length > 1 && (
+                <>
+                  <button onClick={(e) => navigateImage('prev', e)} className="absolute left-2 md:left-6 top-1/2 -translate-y-1/2 p-2 flex items-center justify-center active:scale-90 transition-all z-[95] text-white mix-blend-difference opacity-80 hover:opacity-100">
+                    <ChevronLeft size={48} strokeWidth={2} />
+                  </button>
+                  <button onClick={(e) => navigateImage('next', e)} className="absolute right-2 md:right-6 top-1/2 -translate-y-1/2 p-2 flex items-center justify-center active:scale-90 transition-all z-[95] text-white mix-blend-difference opacity-80 hover:opacity-100">
+                    <ChevronRight size={48} strokeWidth={2} />
+                  </button>
+                </>
+              )}
+
+              <TransformWrapper initialScale={1} minScale={1} maxScale={4} centerOnInit>
+                <TransformComponent wrapperClass="!w-full !h-full" contentClass="!w-full !h-full flex items-center justify-center">
+                  <img src={fullscreenImage.url} alt="Fullscreen" className="max-w-full max-h-[90vh] object-contain shadow-2xl pointer-events-auto" />
+                </TransformComponent>
+              </TransformWrapper>
+            </>
           )}
 
-          <TransformWrapper initialScale={1} minScale={1} maxScale={4} centerOnInit>
-            <TransformComponent wrapperClass="!w-full !h-full" contentClass="!w-full !h-full flex items-center justify-center">
-              <img src={fullscreenImage.url} alt="Fullscreen" className="max-w-full max-h-[90vh] object-contain shadow-2xl pointer-events-auto" />
-            </TransformComponent>
-          </TransformWrapper>
         </div>
       )}
     </>
   );
-} 
+}
