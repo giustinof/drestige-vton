@@ -1,5 +1,6 @@
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import InstallPrompt from "../../components/InstallPrompt";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -14,12 +15,10 @@ const geistMono = Geist_Mono({
 export const metadata = {
   title: "Drestige V-TON",
   description: "Gestione catalogo e Virtual Try-On",
-  // 1. DICHIARAZIONE DEL MANIFEST (FONDAMENTALE PER ANDROID/CHROME)
   manifest: "/manifest.json",
-  // 2. DICHIARAZIONE PER INSTALLAZIONE SU IOS/SAFARI
   appleWebApp: {
     capable: true,
-    statusBarStyle: "black-translucent", // Si fonde meglio col nostro nuovo sfondo scuro
+    statusBarStyle: "black-translucent",
     title: "Drestige V-TON",
   },
 };
@@ -29,7 +28,7 @@ export const viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
-  themeColor: '#09090b', // Aggiornato al nero del nuovo design
+  themeColor: '#09090b',
 };
 
 export default function RootLayout({ children }) {
@@ -39,11 +38,12 @@ export default function RootLayout({ children }) {
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased selection:bg-indigo-500 selection:text-white`}
     >
       <head>
-        {/* 3. ICONA PER LA HOME DI IOS */}
         <link rel="apple-touch-icon" href="/icon-192x192.png" />
       </head>
-      <body className="min-h-full flex flex-col bg-[#09090b] text-white">
+      <body className="min-h-full flex flex-col bg-[#09090b] text-white relative">
+        <InstallPrompt />
         {children}
+        
       </body>
     </html>
   );
