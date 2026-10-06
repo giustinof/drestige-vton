@@ -1,10 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '../../../../lib/supabase'; // Controlla sempre i percorsi
 
-if (process.env.NODE_ENV === 'development') {
-  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-}
-
 export async function POST(req) {
   let angle = 'sconosciuto'; // Variabile sicura per il catch
 
@@ -22,24 +18,24 @@ export async function POST(req) {
 
     // --- FASE 1: Scarichiamo lo scatto grezzo da Supabase ---
     const imageResponse = await fetch(garmentImageUrl);
+    if (!imageResponse.ok) throw new Error(`Impossibile scaricare l'immagine originale (HTTP ${imageResponse.status})`);
     const imageArrayBuffer = await imageResponse.arrayBuffer();
     const imageBlob = new Blob([imageArrayBuffer], { type: 'image/jpeg' });
 
-    // --- FASE 2: Preparazione chiamata Photoroom ---
+    // --- FASE 2: Preparazione chiamata Photoroom Ghost Mannequin ---
     const formData = new FormData();
     formData.append('imageFile', imageBlob, 'product.jpg');
     
-    // IL SEGRETO È QUI: Rimuoviamo il prompt testuale generativo!
-    // Usiamo il colore esadecimale per forzare uno sfondo bianco puro stile e-commerce.
+    // Attiviamo l'intelligenza artificiale per il Ghost Mannequin
+    formData.append('ghostMannequin.mode', 'ai.auto');
+    
+    // Forziamo lo sfondo bianco puro perfetto per e-commerce
     formData.append('background.color', '#FFFFFF');
     
-    // Manteniamo l'AI attiva SOLO per generare l'ombra di ancoraggio
-    formData.append('shadow.mode', 'ai.soft');
+    // Leggero padding per inquadrare bene il capo d'abbigliamento al centro
+    formData.append('padding', '0.10'); 
     
-    // Aumentato leggermente il padding (0.15) per far "respirare" meglio la scarpa nell'inquadratura
-    formData.append('padding', '0.15'); 
-    
-    // Esportazione
+    // Formato di esportazione (JPEG è più leggero e standard per e-commerce se lo sfondo è solido)
     formData.append('export.format', 'jpeg');
 
     // --- FASE 3: Chiamata a Photoroom ---
@@ -64,11 +60,11 @@ export async function POST(req) {
     const resultImageBuffer = await photoroomResponse.arrayBuffer();
 
     // --- FASE 4: Salvataggio nel bucket Supabase ---
-    const fileName = `${productId}_photoroom_${angle}_${Date.now()}.jpg`;
+    const fileName = `${productId}_ghost_${angle}_${Date.now()}.jpg`;
     const filePath = `${productId}/${fileName}`;
 
     const { error: uploadError } = await supabase.storage
-      .from('product-images') // IL TUO BUCKET
+      .from('product-images') // ASSICURATI CHE IL BUCKET SIA CORRETTO
       .upload(filePath, resultImageBuffer, {
         contentType: 'image/jpeg',
       });
@@ -95,7 +91,7 @@ export async function POST(req) {
     return NextResponse.json({ success: true, url: publicUrl, angle });
 
   } catch (error) {
-    console.error(`Errore Photoroom (${angle}):`, error);
-    return NextResponse.json({ error: error.message || 'Errore generazione background' }, { status: 500 });
+    console.error(`Errore Photoroom Ghost Mannequin (${angle}):`, error);
+    return NextResponse.json({ error: error.message || 'Errore generazione ghost mannequin' }, { status: 500 });
   }
 }

@@ -4,12 +4,6 @@ import { Camera, X, Loader2, Check, Info } from 'lucide-react';
 import { supabase } from '../lib/supabase'; 
 
 export default function NewProductPanel({ onClose, workerId, categories, initialTagFile }) {
-  const [tagImage] = useState(URL.createObjectURL(initialTagFile));
-  
-  const [selectedModelInfo, setSelectedModelInfo] = useState(null); 
-  const [modelPoses, setModelPoses] = useState([]); 
-  const [isLoadingModel, setIsLoadingModel] = useState(false);
-  
   const [productImages, setProductImages] = useState([]); 
   
   const [formData, setFormData] = useState({
@@ -19,14 +13,12 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     category_id: ''
   });
   
-  // --- STATI STAGIONI ---
   const [seasons, setSeasons] = useState([]);
   const [selectedSeason, setSelectedSeason] = useState('');
 
   const [isOcrProcessing, setIsOcrProcessing] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
-  // --- LOGICA ACCESSORI ---
   const isAccessory = categories.find(c => c.id === formData.category_id)?.gender?.toLowerCase() === 'unisex';
   
   const accessoryPoses = [
@@ -36,6 +28,14 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     { angle: 'top', label: 'Dall\'alto' },
     { angle: 'detail', label: 'Dettaglio / Logo' },
     { angle: 'sole', label: 'Suola / Interno' }
+  ];
+
+  const clothingPoses = [
+    { angle: 'front', label: 'Fronte (Flat Lay)', required: true },
+    { angle: 'back', label: 'Retro (Flat Lay)', required: true },
+    { angle: 'inner_tag', label: 'Etichetta Interna', required: false },
+    { angle: 'detail_1', label: 'Dettaglio 1', required: false },
+    { angle: 'detail_2', label: 'Dettaglio 2', required: false }
   ];
 
   // 0. Fetch Stagioni
@@ -48,7 +48,7 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
       
       if (!error && data && data.length > 0) {
         setSeasons(data);
-        setSelectedSeason(data[0].id); // Seleziona la prima di default
+        setSelectedSeason(data[0].id); 
       }
     };
     fetchSeasons();
@@ -73,65 +73,7 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     processTag();
   }, [initialTagFile]);
 
-  // 2. LOGICA SELEZIONE MODELLO (Solo per abbigliamento)
-  useEffect(() => {
-    const fetchModel = async () => {
-      if (!formData.category_id || isAccessory) {
-        setIsLoadingModel(false);
-        return;
-      }
-      
-      setIsLoadingModel(true);
-      setProductImages([]); 
-      setSelectedModelInfo(null);
-      setModelPoses([]);
-
-      try {
-        const category = categories.find(c => c.id === formData.category_id);
-        if (!category) throw new Error("Categoria non trovata");
-
-        const { data: availableModels, error: modelsError } = await supabase
-          .from('ai_models')
-          .select('id, name')
-          .ilike('gender', category.gender)
-          .eq('is_active', true);
-
-        if (modelsError) throw modelsError;
-        
-        if (availableModels.length === 0) {
-           console.warn("Nessun modello trovato per questo genere.");
-           setIsLoadingModel(false);
-           return;
-        }
-
-        const randomModel = availableModels[Math.floor(Math.random() * availableModels.length)];
-        setSelectedModelInfo(randomModel);
-
-        const { data: poses, error: posesError } = await supabase
-          .from('ai_poses')
-          .select('angle, base_image_url')
-          .eq('model_id', randomModel.id)
-          .eq('category_id', formData.category_id);
-
-        if (posesError) throw posesError;
-        
-        const order = { 'front': 1, 'back': 2, 'left': 3, 'right': 4 };
-        const sortedPoses = poses.sort((a, b) => (order[a.angle] || 5) - (order[b.angle] || 5));
-        
-        setModelPoses(sortedPoses);
-
-      } catch (error) {
-        console.error("Errore recupero modello:", error);
-      } finally {
-        setIsLoadingModel(false);
-      }
-    };
-
-    fetchModel();
-  }, [formData.category_id, categories, isAccessory]);
-
-
-  // 3. Acquisizione guidata
+  // 2. Acquisizione guidata
   const handleProductCapture = (e, angle) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -144,15 +86,21 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     e.target.value = null; 
   };
 
-  // 4. Salvataggio Istantaneo e Avvio AI Sequenziale (Stagno)
+  // 3. Salvataggio
   const handleSave = async () => {
     if (!formData.category_id) return alert("Devi selezionare una categoria.");
-    if (productImages.length === 0) return alert("Aggiungi almeno una foto del prodotto.");
     if (!selectedSeason) return alert("Devi selezionare una stagione.");
+    
+    if (!isAccessory) {
+      const hasFront = productImages.some(img => img.angle === 'front');
+      const hasBack = productImages.some(img => img.angle === 'back');
+      if (!hasFront || !hasBack) return alert("Per l'abbigliamento devi scattare almeno Fronte e Retro.");
+    } else {
+      if (productImages.length === 0) return alert("Aggiungi almeno una foto del prodotto.");
+    }
 
-    setIsSaving(true); // Disabilita il bottone e mostra il caricamento
+    setIsSaving(true);
     try {
-      // 1. Creazione prodotto a DB (Istanza base)
       const { data: newProduct, error: productError } = await supabase
         .from('products')
         .insert([{
@@ -168,7 +116,6 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
       if (productError) throw productError;
       const productId = newProduct.id;
 
-      // 2. Upload diretto dal Client a Supabase Storage (Nessun limite di peso!)
       const uploadFile = async (file, type, angle = 'none') => {
         const fileExt = file.name.split('.').pop();
         const fileName = `${productId}_${type}_${angle}_${Date.now()}.${fileExt}`;
@@ -181,19 +128,14 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
         return { url: publicUrl, type, angle };
       };
 
-      // Avviamo tutti gli upload contemporaneamente per fare prima
       const uploadPromises = [
         uploadFile(initialTagFile, 'tag', 'none'),
         ...productImages.map(img => uploadFile(img.file, 'raw_item', img.angle))
       ];
 
-      // Aspettiamo che TUTTE le foto siano fisicamente su Supabase
       const uploadedImages = await Promise.all(uploadPromises);
-
-      // 3. Ora avvisiamo Vercel passandogli SOLO I LINK (payload leggerissimo JSON)
       const categoryName = categories.find(c => c.id === formData.category_id)?.name || '';
       
-      // Chiamata non bloccante per l'AI
       fetch('/api/process-product-pipeline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -204,12 +146,11 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
           categoryName,
           modelCode: formData.model_code,
           variantCode: formData.variant_code,
-          uploadedImages // Passiamo array di oggetti { url, type, angle }
+          uploadedImages 
         }),
-        keepalive: true // Mantiene viva la richiesta anche se si smonta il componente
+        keepalive: true 
       }).catch(err => console.error("Errore avvio AI in background:", err));
 
-      // 4. Upload Finito. Chiudiamo l'interfaccia, il magazziniere può fare altro!
       onClose(); 
 
     } catch (error) {
@@ -223,7 +164,7 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
   const womenCategories = categories.filter(c => c.gender.toLowerCase() === 'donna');
   const unisexCategories = categories.filter(c => c.gender.toLowerCase() === 'unisex');
 
-  const angleLabels = { 'front': 'Fronte', 'back': 'Retro', 'left': 'Lato SX', 'right': 'Lato DX' };
+  const posesToRender = isAccessory ? accessoryPoses : clothingPoses;
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/40 backdrop-blur-sm">
@@ -238,7 +179,6 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
 
         <div className="flex-1 overflow-y-auto p-6 space-y-8 pb-32">
           
-          {/* SEZIONE STAGIONE (Nuova, orizzontale scrollabile) */}
           {seasons.length > 0 && (
             <div className="space-y-3">
               <h3 className="font-bold text-gray-900">Stagione <span className="text-red-500">*</span></h3>
@@ -260,7 +200,6 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
             </div>
           )}
 
-          {/* Sezione Dati OCR */}
           <div className="space-y-4">
             <div className="flex justify-between items-end mb-2">
               <h3 className="font-bold text-gray-900">Dati Cartellino</h3>
@@ -295,7 +234,6 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
             </div>
           </div>
           
-          {/* Sezione Categoria */}
           <div className="space-y-2">
             <h3 className="font-bold text-gray-900">Categoria <span className="text-red-500">*</span></h3>
             <select 
@@ -322,128 +260,72 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
             </select>
           </div>
 
-          {/* SEZIONE BIVIO: SCATTO FOTO (Accessori vs Abbigliamento) */}
           {formData.category_id && (
             <div className="space-y-4">
-              <div className="flex justify-between items-end mb-2">
-                <h3 className="font-bold text-gray-900">Scatta le foto richieste</h3>
-                {isLoadingModel && !isAccessory && <Loader2 size={16} className="animate-spin text-gray-400" />}
+              <h3 className="font-bold text-gray-900">Scatta le foto richieste</h3>
+
+              <div className="bg-blue-50 text-blue-800 p-3 rounded-xl flex items-start gap-3 text-sm font-medium mb-4">
+                <Info size={20} className="mt-0.5 shrink-0" />
+                <p>
+                  {isAccessory 
+                    ? "Poggia l'oggetto su una superficie pulita. L'AI rimuoverà lo sfondo e aggiungerà ombre realistiche." 
+                    : "Stendi il capo per Fronte e Retro (elaborati in Flat Lay). Etichette e dettagli verranno scontornati mantenendo la prospettiva originale."}
+                </p>
               </div>
-
-              {isAccessory ? (
-                // --- UI ACCESSORI (Photoroom) ---
-                <>
-                  <div className="bg-blue-50 text-blue-800 p-3 rounded-xl flex items-start gap-3 text-sm font-medium mb-4">
-                    <Info size={20} className="mt-0.5 shrink-0" />
-                    <p>Poggia l'oggetto su una superficie pulita. L'AI rimuoverà lo sfondo e aggiungerà ombre realistiche.</p>
-                  </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                {posesToRender.map((pose) => {
+                  const capturedImage = productImages.find(img => img.angle === pose.angle);
                   
-                  <div className="grid grid-cols-2 gap-4">
-                    {accessoryPoses.map((pose) => {
-                      const capturedImage = productImages.find(img => img.angle === pose.angle);
+                  return (
+                    <div key={pose.angle} className={`relative aspect-square bg-gray-50 rounded-2xl overflow-hidden flex flex-col group border-2 border-dashed ${pose.required && !capturedImage ? 'border-red-300 bg-red-50/50' : 'border-gray-300'}`}>
                       
-                      return (
-                        <div key={pose.angle} className="relative aspect-square bg-gray-50 rounded-2xl overflow-hidden flex flex-col group border-2 border-dashed border-gray-300">
-                          
-                          {!capturedImage && (
-                            <div className="absolute inset-0 flex flex-col items-center justify-center p-2 text-center pointer-events-none">
-                              <span className="text-sm font-bold text-gray-600">{pose.label}</span>
-                            </div>
-                          )}
-
-                          {capturedImage && (
-                            <img src={capturedImage.preview} className="absolute inset-0 w-full h-full object-cover z-10" />
-                          )}
-
-                          <input 
-                            id={`capture-${pose.angle}`} type="file" accept="image/*" capture="environment" 
-                            className="hidden" onChange={(e) => handleProductCapture(e, pose.angle)} 
-                          />
-                          <label 
-                            htmlFor={`capture-${pose.angle}`}
-                            className={`absolute inset-0 z-20 flex flex-col justify-end p-3 cursor-pointer ${capturedImage ? 'opacity-0 group-hover:opacity-100 bg-black/40' : 'bg-transparent'} transition-all`}
-                          >
-                            <div className="bg-black text-white w-full py-2.5 rounded-xl flex justify-center items-center gap-2 backdrop-blur-md shadow-md active:scale-95 transition-transform">
-                              <Camera size={18} />
-                              <span className="text-sm font-bold">{capturedImage ? 'Rifai' : 'Scatta'}</span>
-                            </div>
-                          </label>
+                      {!capturedImage && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center p-2 text-center pointer-events-none">
+                          <span className={`text-sm font-bold ${pose.required ? 'text-red-500' : 'text-gray-500'}`}>
+                            {pose.label}
+                            {pose.required && '*'}
+                          </span>
                         </div>
-                      );
-                    })}
-                  </div>
-                </>
-              ) : (
-                // --- UI ABBIGLIAMENTO (Genlook VTON) ---
-                <>
-                  {selectedModelInfo && (
-                    <div className="bg-blue-50 text-blue-800 p-3 rounded-xl flex items-start gap-3 text-sm font-medium mb-4">
-                      <Info size={20} className="mt-0.5 shrink-0" />
-                      <p>Replica le pose del modello (<strong>{selectedModelInfo.name}</strong>) per un risultato perfetto.</p>
-                    </div>
-                  )}
+                      )}
 
-                  <div className="grid grid-cols-2 gap-4">
-                    {modelPoses.map((pose) => {
-                      const capturedImage = productImages.find(img => img.angle === pose.angle);
-                      const label = angleLabels[pose.angle] || pose.angle;
+                      {capturedImage && (
+                        <img src={capturedImage.preview} className="absolute inset-0 w-full h-full object-cover z-10" />
+                      )}
 
-                      return (
-                        <div key={pose.angle} className="relative aspect-[3/4] bg-gray-100 rounded-2xl overflow-hidden shadow-inner flex flex-col group">
-                          
-                          {!capturedImage && (
-                            <>
-                              <img src={pose.base_image_url} alt={pose.angle} className="absolute inset-0 w-full h-full object-cover opacity-30 mix-blend-multiply" />
-                              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                                <span className="bg-white/80 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold text-black mb-2 shadow-sm uppercase tracking-wide">
-                                  {label}
-                                </span>
-                              </div>
-                            </>
-                          )}
-
-                          {capturedImage && (
-                            <img src={capturedImage.preview} alt="Catturata" className="absolute inset-0 w-full h-full object-cover z-10" />
-                          )}
-
-                          <input 
-                            id={`capture-${pose.angle}`} type="file" accept="image/*" capture="environment" 
-                            className="hidden" onChange={(e) => handleProductCapture(e, pose.angle)} 
-                          />
-                          
-                          <label 
-                            htmlFor={`capture-${pose.angle}`}
-                            className={`absolute inset-0 z-20 flex flex-col justify-end p-3 cursor-pointer ${capturedImage ? 'opacity-0 group-hover:opacity-100 bg-black/40' : 'bg-transparent'} transition-all`}
-                          >
-                            <div className="bg-black text-white w-full py-2.5 rounded-xl flex justify-center items-center gap-2 backdrop-blur-md shadow-md active:scale-95 transition-transform">
-                              <Camera size={18} />
-                              <span className="text-sm font-bold">{capturedImage ? 'Rifai' : 'Scatta'}</span>
-                            </div>
-                          </label>
+                      <input 
+                        id={`capture-${pose.angle}`} type="file" accept="image/*" capture="environment" 
+                        className="hidden" onChange={(e) => handleProductCapture(e, pose.angle)} 
+                      />
+                      <label 
+                        htmlFor={`capture-${pose.angle}`}
+                        className={`absolute inset-0 z-20 flex flex-col justify-end p-3 cursor-pointer ${capturedImage ? 'opacity-0 group-hover:opacity-100 bg-black/40' : 'bg-transparent'} transition-all`}
+                      >
+                        <div className="bg-black text-white w-full py-2.5 rounded-xl flex justify-center items-center gap-2 backdrop-blur-md shadow-md active:scale-95 transition-transform">
+                          <Camera size={18} />
+                          <span className="text-sm font-bold">{capturedImage ? 'Rifai' : 'Scatta'}</span>
                         </div>
-                      );
-                    })}
-                  </div>
-                  
-                  {!isLoadingModel && modelPoses.length === 0 && (
-                    <div className="p-4 bg-gray-50 border border-dashed border-gray-300 rounded-2xl text-center text-gray-500 text-sm font-medium">
-                      Nessun modello specifico configurato per questa categoria.
+                      </label>
                     </div>
-                  )}
-                </>
-              )}
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
 
-        {/* Footer */}
         <div className="absolute bottom-0 left-0 right-0 p-6 bg-white border-t border-gray-50 shadow-[0_-10px_20px_rgb(0,0,0,0.02)]">
           <button 
             onClick={handleSave}
-            disabled={isSaving || isOcrProcessing || !formData.category_id || !selectedSeason}
-            className={`w-full py-4 rounded-2xl font-black text-white text-lg transition-all ${
-              isSaving || isOcrProcessing || !formData.category_id || !selectedSeason ? 'bg-gray-200 text-gray-400' : 'bg-black active:scale-95 shadow-lg'
-            }`}
+            disabled={
+              isSaving || 
+              isOcrProcessing || 
+              !formData.category_id || 
+              !selectedSeason ||
+              (!isAccessory && (!productImages.some(img => img.angle === 'front') || !productImages.some(img => img.angle === 'back'))) ||
+              (isAccessory && productImages.length === 0)
+            }
+            className="w-full py-4 rounded-2xl font-black text-white text-lg transition-all disabled:bg-gray-200 disabled:text-gray-400 bg-black active:scale-95 shadow-lg"
           >
             {isSaving ? (
               <span className="flex items-center justify-center gap-2">

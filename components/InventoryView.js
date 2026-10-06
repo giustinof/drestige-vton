@@ -626,4 +626,4 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       )}
     </>
   );
-}
+} 

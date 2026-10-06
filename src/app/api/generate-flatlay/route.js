@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '../../../../lib/supabase'; // Controlla sempre i percorsi
+import { supabase } from '../../../../lib/supabase';
 
 if (process.env.NODE_ENV === 'development') {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 }
 
 export async function POST(req) {
-  let angle = 'sconosciuto'; // Variabile sicura per il catch
+  let angle = 'sconosciuto';
 
   try {
     const body = await req.json();
@@ -22,6 +22,7 @@ export async function POST(req) {
 
     // --- FASE 1: Scarichiamo lo scatto grezzo da Supabase ---
     const imageResponse = await fetch(garmentImageUrl);
+    if (!imageResponse.ok) throw new Error(`Impossibile scaricare l'immagine originale (HTTP ${imageResponse.status})`);
     const imageArrayBuffer = await imageResponse.arrayBuffer();
     const imageBlob = new Blob([imageArrayBuffer], { type: 'image/jpeg' });
 
@@ -29,17 +30,23 @@ export async function POST(req) {
     const formData = new FormData();
     formData.append('imageFile', imageBlob, 'product.jpg');
     
-    // IL SEGRETO È QUI: Rimuoviamo il prompt testuale generativo!
-    // Usiamo il colore esadecimale per forzare uno sfondo bianco puro stile e-commerce.
+    // Attiviamo l'intelligenza artificiale per il Flat Lay
+    formData.append('flatLay.mode', 'ai.auto');
+    
+    // Prompt dinamico in base all'angolo per evitare allucinazioni sul colletto
+    if (angle === 'back') {
+      formData.append('flatLay.prompt', 'back view of the garment, reverse side, straight collar, no front neckline');
+    } else if (angle === 'front'){
+      formData.append('flatLay.prompt', 'front view of the garment, clean studio flat lay');
+    }
+    
+    // Forziamo lo sfondo bianco puro per e-commerce
     formData.append('background.color', '#FFFFFF');
     
-    // Manteniamo l'AI attiva SOLO per generare l'ombra di ancoraggio
-    formData.append('shadow.mode', 'ai.soft');
+    // Leggero padding per inquadrare bene il capo
+    formData.append('padding', '0.10'); 
     
-    // Aumentato leggermente il padding (0.15) per far "respirare" meglio la scarpa nell'inquadratura
-    formData.append('padding', '0.15'); 
-    
-    // Esportazione
+    // Esportazione in jpeg per leggerezza e compatibilità
     formData.append('export.format', 'jpeg');
 
     // --- FASE 3: Chiamata a Photoroom ---
@@ -64,11 +71,11 @@ export async function POST(req) {
     const resultImageBuffer = await photoroomResponse.arrayBuffer();
 
     // --- FASE 4: Salvataggio nel bucket Supabase ---
-    const fileName = `${productId}_photoroom_${angle}_${Date.now()}.jpg`;
+    const fileName = `${productId}_flatlay_${angle}_${Date.now()}.jpg`;
     const filePath = `${productId}/${fileName}`;
 
     const { error: uploadError } = await supabase.storage
-      .from('product-images') // IL TUO BUCKET
+      .from('product-images')
       .upload(filePath, resultImageBuffer, {
         contentType: 'image/jpeg',
       });
@@ -95,7 +102,7 @@ export async function POST(req) {
     return NextResponse.json({ success: true, url: publicUrl, angle });
 
   } catch (error) {
-    console.error(`Errore Photoroom (${angle}):`, error);
-    return NextResponse.json({ error: error.message || 'Errore generazione background' }, { status: 500 });
+    console.error(`Errore Photoroom Flat Lay (${angle}):`, error);
+    return NextResponse.json({ error: error.message || 'Errore generazione flat lay' }, { status: 500 });
   }
 }

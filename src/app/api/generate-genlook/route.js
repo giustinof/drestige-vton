@@ -19,12 +19,10 @@ export async function POST(req) {
     // --- FASE 1: DOWNLOAD SICURO DA SUPABASE & UPLOAD A GENLOOK ---
     console.log(`[Pipeline VTON] Download immagine modello da: ${modelImageUrl}`);
     
-    // Estraiamo il nome del file dall'URL pubblico (es. 'lin_costume_front.jpg')
     const urlParts = modelImageUrl.split('/model-assets/');
     if (urlParts.length !== 2) throw new Error("URL immagine modello non valido");
     const fileNameOnSupabase = urlParts[1];
 
-    // Scarichiamo il file usando l'SDK ufficiale di Supabase (ignora i blocchi HTTP)
     const { data: blobData, error: downloadError } = await supabase
       .storage
       .from('model-assets')
@@ -34,19 +32,19 @@ export async function POST(req) {
       throw new Error(`Impossibile scaricare immagine dal bucket Supabase: ${downloadError.message}`);
     }
 
-    // Leggiamo dinamicamente il tipo di immagine (jpeg, png, webp)
+    // Corretto il bug "ext is not defined", ora usa correttamente "extension"
     const contentType = blobData.type || 'image/jpeg';
     const extension = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
     const modelArrayBuffer = await blobData.arrayBuffer();
 
     const { imageId } = await genlookClient.images.upload(modelArrayBuffer, {
-      filename: `model_base_${angle}.${ext}`, 
+      filename: `model_base_${angle}.${extension}`, 
       mimeType: contentType,
       crop: false, 
     });
 
-    // --- FASE 2: TRY-ON TRAMITE CREATESYNC ---
-    const result = await genlookClient.tryOn.createSync({
+    // --- FASE 2: TRY-ON TRAMITE CREATE (Metodo supportato da tutte le versioni SDK) ---
+    const { generationId } = await genlookClient.tryOn.create({
       products: [{
         externalId: `${productId}_${angle}`, 
         title: `Drestige Garment - ${angle}`,
@@ -58,13 +56,13 @@ export async function POST(req) {
       output: { watermark: false, aiLabel: false }
     });
 
-    const done = result.status === "COMPLETED" ? result : await genlookClient.generations.waitFor(result.generationId);
+    // Attendiamo che Genlook finisca di elaborare l'immagine originale
+    const done = await genlookClient.generations.waitFor(generationId);
     
     const tempImageUrl = done.resultImageUrl;
     if (!tempImageUrl) throw new Error("Generazione completata ma nessun URL restituito.");
 
     // --- FASE 3: SALVATAGGIO NEL NOSTRO SUPABASE ---
-    // Usiamo fetch qui perché Genlook genera URL sicuri pensati per essere scaricati via API
     const imageResponse = await fetch(tempImageUrl);
     if(!imageResponse.ok) throw new Error(`Fallito download risultato da Genlook. HTTP ${imageResponse.status}`);
     const imageArrayBuffer2 = await imageResponse.arrayBuffer();
@@ -96,12 +94,6 @@ export async function POST(req) {
 
   } catch (error) {
     console.error(`Errore Genlook (${angle}):`, error);
-    
-    if (error.code) {
-      if (error.code === 'INSUFFICIENT_CREDITS') return NextResponse.json({ error: 'Crediti Genlook esauriti' }, { status: 402 });
-      return NextResponse.json({ error: `${error.code}: ${error.message}` }, { status: error.status || 500 });
-    }
-    
     return NextResponse.json({ error: error.message || 'Errore generazione' }, { status: 500 });
   }
 }

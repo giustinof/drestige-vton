@@ -2,7 +2,10 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 
-// IMPORTANTE: Diamo a Vercel fino a 60 secondi (o 300 su Pro) per fare il lavoro in background
+if (process.env.NODE_ENV === 'development') {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
+
 export const maxDuration = 60; 
 export const dynamic = 'force-dynamic';
 
@@ -11,7 +14,6 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 
-// Inizializza OpenAI per la SEO visiva
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(req) {
@@ -21,24 +23,20 @@ export async function POST(req) {
 
     console.log(`[Pipeline] Avvio processo per: ${productId}`);
 
-    // 1. Salviamo i record delle immagini grezze nel DB (le foto fisiche sono già su Storage Supabase grazie al client)
+    // 1. Salvataggio record immagini grezze
     const imageDbRecords = uploadedImages.map(img => ({
       product_id: productId,
       url: img.url,
       type: img.type,
-      angle: img.angle // Manteniamo traccia dell'angolo anche a database
+      angle: img.angle 
     }));
     await supabase.from('product_images').insert(imageDbRecords);
 
-    // 2. Separiamo il cartellino dalle foto prodotto per smistarle alle varie AI
+    // 2. Separazione tag OCR dalle foto prodotto
     const tagUrl = uploadedImages.find(i => i.type === 'tag')?.url;
     const rawImages = uploadedImages.filter(i => i.type === 'raw_item');
 
-    // ==========================================
-    // 3. PROCESSI PARALLELI: SEO AI & V-TON AI
-    // ==========================================
-
-    // A. PROCESSO SEO (OpenAI)
+    // A. PROCESSO SEO
     const seoPromise = async () => {
       try {
         console.log("[Pipeline SEO] Avvio AI...");
@@ -63,9 +61,7 @@ REGOLE TASSATIVE:
           { role: "system", content: systemPrompt },
           { role: "user", content: [
               { type: "text", text: `Dati Prodotto:\n- Categoria: ${categoryName}\n- Codice Modello da inserire alla fine: ${modelCode}\n\nAnalizza le seguenti foto e scrivi titolo e descrizione in formato JSON.` },
-              // Includiamo il tag per aiutare a leggere Brand e composizioni testuali
               { type: "image_url", image_url: { url: tagUrl } },
-              // Limitiamo le foto raw a 3 per ottimizzare i token di GPT-4o
               ...rawImages.slice(0, 3).map(r => ({ type: "image_url", image_url: { url: r.url } }))
             ]
           }
@@ -81,7 +77,6 @@ REGOLE TASSATIVE:
 
         const seoData = JSON.parse(response.choices[0].message.content);
         
-        // Aggiorniamo il db con i testi generati
         await supabase.from('products').update({ 
           title: seoData.title, 
           description: seoData.description 
@@ -93,18 +88,36 @@ REGOLE TASSATIVE:
       }
     };
 
-    // B. PROCESSI V-TON (Photoroom o Genlook)
-    // Determiniamo dinamicamente il base URL per chiamare le nostre stesse API
-    // (In produzione su Vercel, req.headers.get('host') ci dà il dominio corretto)
+    // B. PROCESSI IMMAGINI (Flat Lay o Scontorno Standard)
     const protocol = req.headers.get('x-forwarded-proto') || 'http';
     const host = req.headers.get('host');
     const isLocal = process.env.NODE_ENV === 'development';
-    const baseUrl = isLocal ? 'http://localhost:3000' : `${req.headers.get('x-forwarded-proto') || 'https'}://${req.headers.get('host')}`;
+    const baseUrl = isLocal ? 'http://localhost:3000' : `${protocol}://${host}`;
 
-    const vtonPromises = rawImages.map(async (imgObj) => {
+    const imagePromises = rawImages.map(async (imgObj) => {
       try {
-        if (isAccessory) {
-          console.log(`[Pipeline VTON] Chiamo Photoroom per Accessorio: ${imgObj.angle}`);
+        // Flat Lay solo per fronte e retro dell'abbigliamento
+        const needsFlatLay = !isAccessory && (imgObj.angle === 'front' || imgObj.angle === 'back');
+
+        if (needsFlatLay) {
+          console.log(`[Pipeline] Chiamo Photoroom Flat Lay per: ${imgObj.angle}`);
+          
+          const response = await fetch(`${baseUrl}/api/generate-flatlay`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              productId, 
+              garmentImageUrl: imgObj.url, 
+              angle: imgObj.angle
+            })
+          });
+
+          if (!response.ok) throw new Error(`Errore API Photoroom Flat Lay HTTP ${response.status}`);
+          console.log(`[Pipeline] ✅ Flat Lay ok per ${imgObj.angle}`);
+
+        } else {
+          // Scontorno standard per accessori, etichette interne e dettagli
+          console.log(`[Pipeline] Chiamo Photoroom Scontorno Standard per: ${imgObj.angle}`);
           const response = await fetch(`${baseUrl}/api/generate-product-bg`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -115,51 +128,19 @@ REGOLE TASSATIVE:
             })
           });
 
-          if (!response.ok) throw new Error(`Errore API Photoroom HTTP ${response.status}`);
-          console.log(`[Pipeline VTON] ✅ Photoroom ok per ${imgObj.angle}`);
-
-        } else {
-          console.log(`[Pipeline VTON] Chiamo Genlook per Capo Abbigliamento: ${imgObj.angle}`);
-          
-          // Recuperiamo la posa originale dal DB per passarne la base_image a Genlook
-          const { data: poseInfo } = await supabase
-            .from('ai_poses')
-            .select('base_image_url')
-            .eq('angle', imgObj.angle)
-            .limit(1)
-            .single();
-
-          if (poseInfo && poseInfo.base_image_url) {
-            const response = await fetch(`${baseUrl}/api/generate-genlook`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                productId, 
-                modelImageUrl: poseInfo.base_image_url, 
-                garmentImageUrl: imgObj.url, 
-                angle: imgObj.angle, 
-                workerId
-              })
-            });
-
-            if (!response.ok) throw new Error(`Errore API Genlook HTTP ${response.status}`);
-            console.log(`[Pipeline VTON] ✅ Genlook ok per ${imgObj.angle}`);
-          } else {
-             console.warn(`[Pipeline VTON] ⚠️ Immagine base modello non trovata per angolo ${imgObj.angle}`);
-          }
+          if (!response.ok) throw new Error(`Errore API Photoroom Scontorno HTTP ${response.status}`);
+          console.log(`[Pipeline] ✅ Scontorno ok per ${imgObj.angle}`);
         }
       } catch (e) {
-        console.error(`[Pipeline VTON] ❌ Errore su ${imgObj.angle}:`, e);
+        console.error(`[Pipeline] ❌ Errore su ${imgObj.angle}:`, e);
       }
     });
 
-    // Avviamo tutto contemporaneamente (Node.js gestirà il parallelismo asincrono)
     await Promise.all([
       seoPromise(),
-      ...vtonPromises
+      ...imagePromises
     ]);
 
-    // 4. Fine processo completo, aggiorniamo lo status per farlo apparire completo nell'interfaccia
     await supabase.from('products').update({ status: 'completed' }).eq('id', productId);
     console.log(`[Pipeline] 🎉 Processo terminato per ${productId}`);
 
