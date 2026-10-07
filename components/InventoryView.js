@@ -803,9 +803,19 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                         </div>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
+                      {/* NUOVO PULSANTE MODIFICA */}
+                      <button 
+                        onClick={() => openEditModal(selectedProduct)}
+                        className="w-10 h-10 bg-zinc-100 rounded-full flex items-center justify-center text-zinc-700 hover:bg-zinc-200 active:scale-90 transition-transform mt-1"
+                        title="Modifica prodotto"
+                      >
+                        <Edit size={18} strokeWidth={2.5} />
+                      </button>
+
                       <button onClick={handleShareProduct} disabled={isSharing} className="w-10 h-10 bg-indigo-50 rounded-full flex items-center justify-center text-indigo-600 active:scale-90 transition-transform mt-1 disabled:opacity-50">
                         {isSharing ? <Loader2 size={18} className="animate-spin" /> : <Share2 size={18} strokeWidth={2.5} />}
                       </button>
+                      
                       <button onClick={closeProductModal} className="w-10 h-10 bg-zinc-200/70 rounded-full flex items-center justify-center text-zinc-700 hover:bg-zinc-200 active:scale-90 transition-transform mt-1"><X size={20} strokeWidth={2.5} /></button>
                     </div>
                 </header>
