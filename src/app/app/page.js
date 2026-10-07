@@ -207,7 +207,20 @@ export default function AppHome() {
 
       <main>
         {currentView === 'seasons' ? <SeasonsView /> : (
-          <InventoryView viewMode={currentView} workerId={worker.id} refreshKey={refreshKey} searchQuery={searchQuery} activeFilter={activeFilter} scannedEan={scannedEan} setScannedEan={setScannedEan} />
+          <InventoryView 
+            viewMode={currentView} 
+            workerId={worker.id} 
+            refreshKey={refreshKey} 
+            searchQuery={searchQuery} 
+            activeFilter={activeFilter} 
+            scannedEan={scannedEan} 
+            setScannedEan={setScannedEan} 
+            onRedoProduct={(eanOrModel) => {
+              if (tagCaptureRef.current) {
+                tagCaptureRef.current.click();
+              }
+            }}
+          />
         )}
       </main>
 

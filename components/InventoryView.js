@@ -1,7 +1,7 @@
 "use client"
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop } from 'lucide-react';
+import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop, RotateCcw, AlertCircle, MessageSquare } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import PullToRefresh from 'react-simple-pull-to-refresh';
 import Cropper from 'react-easy-crop';
@@ -89,6 +89,12 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const [croppedAreaPixels, setCroppedAreaPixels] = useState(null);
   const [isSavingImage, setIsSavingImage] = useState(false);
 
+  // Stati per la funzionalità REDO
+  const [redoPromptOpen, setRedoPromptOpen] = useState(false);
+  const [redoReason, setRedoReason] = useState('');
+  const [isSubmittingRedo, setIsSubmittingRedo] = useState(false);
+  const [isProcessingRedo, setIsProcessingRedo] = useState(false);
+
   const touchTimeout = useRef(null);
   const isLongPress = useRef(false);
   const imgTouchTimeout = useRef(null);
@@ -102,7 +108,8 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     const { data: seasonsData } = await supabase.from('collections').select('*').order('created_at', { ascending: false });
     if (seasonsData) setSeasons(seasonsData);
 
-    let query = supabase.from('products').select(`*, product_images(id, url, type, enabled), collections(*)`).order('created_at', { ascending: false });
+    // Modifica: Aggiunto redo(*) alla select per recuperare lo storico dei rifacimenti
+    let query = supabase.from('products').select(`*, product_images(id, url, type, enabled), collections(*), redo(*)`).order('created_at', { ascending: false });
     if (viewMode === 'my-products') query = query.eq('worker_id', workerId);
 
     const { data, error } = await query;
@@ -146,7 +153,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  const handleProductClick = (product) => { if (isLongPress.current) return; window.history.pushState({ modal: 'product' }, ''); setSelectedProduct(product); };
+  const handleProductClick = (product) => { if (isLongPress.current) return; window.history.pushState({ modal: 'product' }, ''); setSelectedProduct(product); setRedoPromptOpen(false); setRedoReason(''); };
   const closeProductModal = () => { if (window.history.state?.modal === 'product') window.history.back(); else setSelectedProduct(null); };
   const openFullscreenImage = (img) => { window.history.pushState({ modal: 'photo' }, ''); setFullscreenImage(img); setIsEditingImage(false); setZoom(1); };
   const closeFullscreenImage = () => { if (window.history.state?.modal === 'photo') window.history.back(); else { setFullscreenImage(null); setIsEditingImage(false); } };
@@ -204,12 +211,19 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     return true;
   });
 
+  // Ordina i prodotti mettendo prima quelli da rifare (redo non completati)
+  const sortedDisplayedProducts = [...displayedProducts].sort((a, b) => {
+    const aNeedsRedo = a.redo?.some(r => !r.done) ? 1 : 0;
+    const bNeedsRedo = b.redo?.some(r => !r.done) ? 1 : 0;
+    return bNeedsRedo - aNeedsRedo; 
+  });
+
   const handleSelectAll = () => {
-    if (selectedItemIds.length === displayedProducts.length && displayedProducts.length > 0) {
+    if (selectedItemIds.length === sortedDisplayedProducts.length && sortedDisplayedProducts.length > 0) {
       setSelectedItemIds([]);
       setIsSelectionMode(false);
     } else {
-      setSelectedItemIds(displayedProducts.map(p => p.id));
+      setSelectedItemIds(sortedDisplayedProducts.map(p => p.id));
     }
   };
 
@@ -384,6 +398,16 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     if (selectedItemIds.length === 0) return;
     setIsDownloading(true);
 
+    const ACCESSORY_CATEGORIES = [
+      '5cf1ce77-c2a7-4454-b1dc-43679937c471', 
+      '6673c18d-e2c7-4a69-a067-2d0d20e9c169', 
+      'd96de87b-c5d1-4fc8-8458-7fcddecb5419', 
+      'ecb540fc-fbc7-44e1-becd-fb75a913f4a5', 
+      'ee53a790-04fb-4224-b0bd-9189df283fe9'  
+    ];
+    const accessoryOrder = ['side', 'front', 'back', 'top', 'sole', 'detail'];
+    const apparelOrder = ['front', 'back', 'inner_tag', 'detail_1', 'detail_2'];
+
     try {
       const zip = new JSZip();
       const downloadedProductIds = [];
@@ -393,8 +417,19 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         const product = products.find(p => p.id === productId);
         if (!product) continue;
 
-        const validImages = product.product_images?.filter(img => img.type === 'processed' && img.enabled !== false) || [];
+        let validImages = product.product_images?.filter(img => img.enabled !== false) || [];
         if (validImages.length === 0) continue; 
+
+        const isAccessory = ACCESSORY_CATEGORIES.includes(product.category_id);
+        const targetOrder = isAccessory ? accessoryOrder : apparelOrder;
+
+        validImages.sort((a, b) => {
+          let indexA = targetOrder.indexOf(a.type);
+          let indexB = targetOrder.indexOf(b.type);
+          if (indexA === -1) indexA = 999;
+          if (indexB === -1) indexB = 999;
+          return indexA - indexB;
+        });
 
         const seasonName = product.collections?.collection || 'SenzaStagione';
         const folder = zip.folder(seasonName);
@@ -418,7 +453,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       }
 
       if (downloadedProductIds.length === 0) {
-        alert("Nessuna foto AI abilitata da scaricare nei prodotti selezionati.");
+        alert("Nessuna foto abilitata da scaricare nei prodotti selezionati.");
         setIsDownloading(false);
         return;
       }
@@ -547,6 +582,75 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     }
   };
 
+  // --- FUNZIONI REDO ---
+  const handleSubmitRedo = async () => {
+    setIsSubmittingRedo(true);
+    const { data, error } = await supabase.from('redo').insert({
+      product_id: selectedProduct.id,
+      reason: redoReason
+    }).select().single();
+
+    if (!error && data) {
+      const updatedProduct = { ...selectedProduct, redo: [...(selectedProduct.redo || []), data] };
+      setSelectedProduct(updatedProduct);
+      setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
+      setRedoPromptOpen(false);
+      setRedoReason('');
+    } else {
+      alert("Errore nell'invio della richiesta.");
+    }
+    setIsSubmittingRedo(false);
+  };
+
+  const handleExecuteRedo = async (activeRedoRecord) => {
+    setIsProcessingRedo(true);
+    try {
+      // 1. Trova ed elimina TUTTE le foto dallo Storage di Supabase
+      const allImages = selectedProduct.product_images || [];
+      if (allImages.length > 0) {
+        const paths = allImages.map(img => {
+          try { return img.url.split('/product-images/')[1]; } catch(e) { return null; }
+        }).filter(Boolean);
+        
+        if (paths.length > 0) {
+          await supabase.storage.from('product-images').remove(paths);
+        }
+      }
+
+      // 2. Elimina l'intero prodotto. 
+      // Grazie al ON DELETE CASCADE, il database eliminerà in automatico 
+      // anche i record associati nelle tabelle 'product_images' e 'redo'.
+      await supabase.from('products').delete().eq('id', selectedProduct.id);
+
+      // Salviamo l'EAN o il model_code prima di distruggere lo stato
+      const productReference = selectedProduct.ean || selectedProduct.model_code;
+
+      // 3. Aggiorna l'interfaccia eliminando il prodotto dalla lista locale
+      setProducts(prev => prev.filter(p => p.id !== selectedProduct.id));
+      
+      // 4. Chiudi la modale
+      if (window.history.state?.modal === 'product') {
+        window.history.back();
+      } else {
+        setSelectedProduct(null);
+      }
+
+      // 5. Chiama la funzione del componente genitore per aprire il NewProductPanel
+      if (onRedoProduct) {
+        // Passiamo un po' di delay per permettere all'animazione della modale di chiudersi
+        setTimeout(() => {
+          onRedoProduct(productReference);
+        }, 300);
+      }
+
+    } catch (e) {
+      console.error(e);
+      alert("Errore durante l'eliminazione del prodotto.");
+    } finally {
+      setIsProcessingRedo(false);
+    }
+  };
+
   if (loading) return <SkeletonGrid />;
 
   return (
@@ -558,27 +662,13 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
             <span className="font-bold text-[19px] tracking-tight">{selectedItemIds.length} selezionati</span>
           </div>
           <div className="flex items-center gap-1">
-            <button 
-              onClick={handleSelectAll} 
-              className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white" 
-              title="Seleziona Tutti"
-            >
+            <button onClick={handleSelectAll} className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white" title="Seleziona Tutti">
               <CheckCheck size={22} strokeWidth={2} />
             </button>
-            <button 
-              onClick={handleBulkReparse} 
-              disabled={isBulkReparsing || isDownloading}
-              className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" 
-              title="Rielabora Etichette AI"
-            >
+            <button onClick={handleBulkReparse} disabled={isBulkReparsing || isDownloading} className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" title="Rielabora Etichette AI">
               {isBulkReparsing ? <Loader2 size={22} className="animate-spin" /> : <RefreshCw size={22} strokeWidth={2} />}
             </button>
-            <button 
-              onClick={handleBulkDownload} 
-              disabled={isDownloading || isBulkReparsing}
-              className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" 
-              title="Scarica foto"
-            >
+            <button onClick={handleBulkDownload} disabled={isDownloading || isBulkReparsing} className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" title="Scarica foto">
               {isDownloading ? <Loader2 size={22} className="animate-spin" /> : <Download size={22} strokeWidth={2} />}
             </button>
             <button onClick={() => openDeleteModal('bulk')} disabled={isDownloading || isBulkReparsing} className="p-2.5 rounded-full hover:bg-indigo-500/50 text-indigo-100 hover:text-white active:scale-95 transition-all disabled:opacity-50" title="Elimina"><Trash2 size={22} strokeWidth={2} /></button>
@@ -591,30 +681,42 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
           
           <div className="mb-4 px-1 flex items-center justify-between animate-in fade-in">
              <p className="text-sm font-semibold text-zinc-500">
-               {displayedProducts.length} {displayedProducts.length === 1 ? 'prodotto' : 'prodotti'} {activeFilter === 'downloaded' ? 'in archivio' : 'trovati'}
+               {sortedDisplayedProducts.length} {sortedDisplayedProducts.length === 1 ? 'prodotto' : 'prodotti'} {activeFilter === 'downloaded' ? 'in archivio' : 'trovati'}
              </p>
           </div>
 
-          {displayedProducts.length === 0 ? (
+          {sortedDisplayedProducts.length === 0 ? (
             <div className="flex flex-col items-center justify-center text-center py-20 opacity-70">
               <div className="w-20 h-20 bg-zinc-100 rounded-full flex items-center justify-center mb-4"><PackageOpen size={36} className="text-zinc-400" strokeWidth={1.5} /></div>
               <p className="font-semibold text-zinc-900 text-lg">Nessun prodotto trovato</p>
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-              {displayedProducts.map(product => {
+              {sortedDisplayedProducts.map(product => {
                 const processedImages = product.product_images?.filter(img => img.type === 'processed') || [];
                 const rawImages = product.product_images?.filter(img => img.type === 'raw_item') || [];
                 const coverImage = processedImages.length > 0 ? processedImages[0].url : (rawImages.length > 0 ? rawImages[0].url : null);
                 const isSelected = selectedItemIds.includes(product.id);
                 
+                // Controlla se c'è un redo attivo per questo prodotto
+                const hasActiveRedo = product.redo?.some(r => !r.done);
+                
                 return (
-                  <div key={product.id} className={`bg-white rounded-[1.25rem] p-2 shadow-sm border cursor-pointer active:scale-[0.98] transition-all select-none relative ${isSelected ? 'border-indigo-500 ring-2 ring-indigo-500 ring-offset-2' : 'border-zinc-100 hover:border-zinc-200'}`}
+                  <div key={product.id} className={`bg-white rounded-[1.25rem] p-2 shadow-sm border cursor-pointer active:scale-[0.98] transition-all select-none relative 
+                    ${isSelected ? 'border-indigo-500 ring-2 ring-indigo-500 ring-offset-2' : hasActiveRedo ? 'border-orange-500 ring-2 ring-orange-500/50' : 'border-zinc-100 hover:border-zinc-200'}`}
                     onClick={() => handleProductClick(product)} onContextMenu={(e) => handleRightClick(e, product)} onTouchStart={(e) => handleTouchStart(e, product)} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove} onTouchCancel={handleTouchEnd}>
+                    
                     {isSelected && (<div className="absolute top-4 right-4 bg-indigo-600 text-white rounded-full p-1 z-1 shadow-md animate-in zoom-in-75"><Check size={16} strokeWidth={3} /></div>)}
+                    
+                    {hasActiveRedo && !isSelected && (
+                      <div className="absolute top-3 left-3 bg-orange-500 text-white text-[10px] tracking-wider font-black px-2 py-1 rounded-md z-10 shadow-sm flex items-center gap-1">
+                        <RotateCcw size={10} strokeWidth={3} /> DA RIFARE
+                      </div>
+                    )}
+
                     <div className="aspect-[3/4] rounded-xl bg-zinc-100 mb-3 overflow-hidden relative border border-zinc-50">
                       {coverImage ? (<img src={coverImage} alt={product.model_code} className={`w-full h-full object-cover pointer-events-none transition-opacity ${isSelected ? 'opacity-80' : ''}`} />) : (<div className="w-full h-full flex flex-col items-center justify-center text-zinc-300"><PackageOpen size={24} /></div>)}
-                      {product.status === 'processing' && processedImages.length === 0 && (
+                      {product.status === 'processing' && processedImages.length === 0 && !hasActiveRedo && (
                           <div className="absolute inset-0 bg-zinc-900/20 backdrop-blur-[2px] flex items-center justify-center"><span className="flex items-center gap-1.5 text-indigo-50 text-xs font-bold px-3 py-1.5 bg-indigo-600/90 rounded-full shadow-lg shadow-indigo-900/20"><Sparkles size={12} className="animate-pulse" /> AI</span></div>
                       )}
                     </div>
@@ -679,111 +781,150 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         </div>
       )}
 
-      {selectedProduct && !editingProduct && (
-        <div className="fixed inset-0 z-40 bg-zinc-900/30 backdrop-blur-sm animate-in fade-in duration-200 overflow-hidden">
-          <div 
-            className={`w-full h-full bg-zinc-50 flex flex-col shadow-2xl ${isDragging ? '' : 'transition-transform duration-300 ease-out'}`}
-            style={{ transform: `translateX(${swipeOffset}px)` }}
-            onTouchStart={onModalTouchStart}
-            onTouchMove={onModalTouchMove}
-            onTouchEnd={onModalTouchEnd}
-          >
-              <header className="px-6 py-4 border-b border-zinc-200/50 flex justify-between items-start bg-white/80 backdrop-blur-md sticky top-0 z-10 shadow-sm">
-                  <div className="pr-2">
-                      <h2 className="text-2xl font-black text-zinc-900 leading-tight">{selectedProduct.model_code}</h2>
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mt-2">
-                        <p className="text-sm text-zinc-600 font-semibold bg-zinc-100 px-2 py-0.5 rounded-md border border-zinc-200">Var: {selectedProduct.variant_code}</p>
-                        {selectedProduct.collections && (
-                          <span className="flex items-center gap-1 text-xs font-bold px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md border border-indigo-100"><CalendarDays size={12} /> {selectedProduct.collections.collection}</span>
-                        )}
-                        {selectedProduct.created_at && (
-                          <span className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 bg-zinc-100 text-zinc-500 rounded-md border border-zinc-200"><Clock size={12} /> {new Date(selectedProduct.created_at).toLocaleString('it-IT', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
-                        )}
+      {selectedProduct && !editingProduct && (() => {
+        const activeRedoRecord = selectedProduct.redo?.find(r => !r.done);
+        return (
+          <div className="fixed inset-0 z-40 bg-zinc-900/30 backdrop-blur-sm animate-in fade-in duration-200 overflow-hidden">
+            <div 
+              className={`w-full h-full bg-zinc-50 flex flex-col shadow-2xl ${isDragging ? '' : 'transition-transform duration-300 ease-out'}`}
+              style={{ transform: `translateX(${swipeOffset}px)` }}
+              onTouchStart={onModalTouchStart}
+              onTouchMove={onModalTouchMove}
+              onTouchEnd={onModalTouchEnd}
+            >
+                <header className="px-6 py-4 border-b border-zinc-200/50 flex justify-between items-start bg-white/80 backdrop-blur-md sticky top-0 z-10 shadow-sm">
+                    <div className="pr-2">
+                        <h2 className="text-2xl font-black text-zinc-900 leading-tight">{selectedProduct.model_code}</h2>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mt-2">
+                          <p className="text-sm text-zinc-600 font-semibold bg-zinc-100 px-2 py-0.5 rounded-md border border-zinc-200">Var: {selectedProduct.variant_code}</p>
+                          {selectedProduct.collections && (
+                            <span className="flex items-center gap-1 text-xs font-bold px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md border border-indigo-100"><CalendarDays size={12} /> {selectedProduct.collections.collection}</span>
+                          )}
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <button onClick={handleShareProduct} disabled={isSharing} className="w-10 h-10 bg-indigo-50 rounded-full flex items-center justify-center text-indigo-600 active:scale-90 transition-transform mt-1 disabled:opacity-50">
+                        {isSharing ? <Loader2 size={18} className="animate-spin" /> : <Share2 size={18} strokeWidth={2.5} />}
+                      </button>
+                      <button onClick={closeProductModal} className="w-10 h-10 bg-zinc-200/70 rounded-full flex items-center justify-center text-zinc-700 hover:bg-zinc-200 active:scale-90 transition-transform mt-1"><X size={20} strokeWidth={2.5} /></button>
+                    </div>
+                </header>
+                
+                <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8 max-w-3xl mx-auto w-full pb-32">
+                    
+                    {/* BANNER DA RIFARE SE PRESENTE RECORD */}
+                    {activeRedoRecord && (
+                      <div className="bg-orange-50 border border-orange-200 rounded-2xl p-5 shadow-sm">
+                        <div className="flex items-start gap-3 mb-4">
+                          <AlertCircle className="text-orange-500 mt-0.5 flex-shrink-0" />
+                          <div>
+                            <h4 className="text-orange-900 font-bold text-lg leading-tight">Prodotto da rifare</h4>
+                            <p className="text-orange-700 text-sm mt-1">{activeRedoRecord.reason || "Nessuna motivazione specificata."}</p>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => handleExecuteRedo(activeRedoRecord)} 
+                          disabled={isProcessingRedo} 
+                          className="w-full bg-orange-600 text-white font-bold py-3.5 rounded-xl flex items-center justify-center gap-2 hover:bg-orange-700 active:scale-95 transition-all shadow-lg shadow-orange-600/20 disabled:opacity-50"
+                        >
+                          {isProcessingRedo ? <Loader2 size={18} className="animate-spin" /> : <RotateCcw size={18} />}
+                          {isProcessingRedo ? 'Reset in corso...' : 'Elimina tutte le foto e Rifai'}
+                        </button>
                       </div>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <button 
-                      onClick={handleShareProduct} 
-                      disabled={isSharing}
-                      className="w-10 h-10 bg-indigo-50 rounded-full flex items-center justify-center text-indigo-600 active:scale-90 transition-transform mt-1 disabled:opacity-50"
-                    >
-                      {isSharing ? <Loader2 size={18} className="animate-spin" /> : <Share2 size={18} strokeWidth={2.5} />}
-                    </button>
-                    <button onClick={closeProductModal} className="w-10 h-10 bg-zinc-200/70 rounded-full flex items-center justify-center text-zinc-700 hover:bg-zinc-200 active:scale-90 transition-transform mt-1"><X size={20} strokeWidth={2.5} /></button>
-                  </div>
-              </header>
-              
-              <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8 max-w-3xl mx-auto w-full pb-32">
-                  <section className="bg-white p-5 rounded-2xl border border-zinc-100 shadow-sm">
-                    <h3 className="font-black text-lg text-zinc-900 mb-2 leading-tight">{selectedProduct.title || "Generazione titolo in corso..."}</h3>
-                    <p className="text-sm text-zinc-600 leading-relaxed">{selectedProduct.description || "L'Intelligenza Artificiale sta scrivendo la descrizione di questo prodotto. Potrebbe volerci qualche istante."}</p>
-                  </section>
+                    )}
 
-                  <section>
-                      <div className="flex items-center gap-2 mb-4">
-                        <Sparkles size={18} className="text-indigo-500" />
-                        <h3 className="font-bold text-lg text-zinc-900">Virtual Try-On (AI)</h3>
-                      </div>
-                      {selectedProduct.product_images?.filter(img => img.type === 'processed').length > 0 ? (
-                          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                              {selectedProduct.product_images.filter(img => img.type === 'processed').map((img, i) => (
-                                  <div 
+                    <section className="bg-white p-5 rounded-2xl border border-zinc-100 shadow-sm">
+                      <h3 className="font-black text-lg text-zinc-900 mb-2 leading-tight">{selectedProduct.title || "Generazione titolo in corso..."}</h3>
+                      <p className="text-sm text-zinc-600 leading-relaxed">{selectedProduct.description || "L'Intelligenza Artificiale sta scrivendo la descrizione di questo prodotto. Potrebbe volerci qualche istante."}</p>
+                    </section>
+
+                    <section>
+                        <div className="flex items-center gap-2 mb-4">
+                          <Sparkles size={18} className="text-indigo-500" />
+                          <h3 className="font-bold text-lg text-zinc-900">Virtual Try-On (AI)</h3>
+                        </div>
+                        {selectedProduct.product_images?.filter(img => img.type === 'processed').length > 0 ? (
+                            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                {selectedProduct.product_images.filter(img => img.type === 'processed').map((img, i) => (
+                                    <div 
+                                      key={i} 
+                                      className={`relative aspect-[3/4] bg-white rounded-2xl overflow-hidden shadow-sm border border-zinc-100 cursor-zoom-in active:opacity-75 transition-all select-none ${img.enabled === false ? 'grayscale opacity-50' : ''}`}
+                                      onClick={() => handleImgClick(img)}
+                                      onTouchStart={(e) => handleImgTouchStart(e, img)}
+                                      onTouchEnd={handleImgTouchEnd}
+                                      onTouchMove={handleImgTouchEnd}
+                                      onContextMenu={(e) => { e.preventDefault(); toggleImageEnabled(img); }}
+                                    >
+                                        <img src={img.url} className="w-full h-full object-cover pointer-events-none" />
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="p-6 bg-white border border-zinc-100 rounded-2xl text-center flex flex-col items-center justify-center gap-2">
+                                <div className="w-12 h-12 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mb-2"><Sparkles size={24} /></div>
+                                <p className="text-sm font-medium text-zinc-600">Nessuna foto generata</p>
+                            </div>
+                        )}
+                    </section>
+
+                    <section>
+                        <h3 className="font-bold text-lg mb-4 text-zinc-900">Scatti Originali</h3>
+                        <div className="flex overflow-x-auto gap-3 pb-4 snap-x hide-scrollbar">
+                            {selectedProduct.product_images?.filter(img => img.type !== 'processed').map((img, i) => (
+                                <div 
                                     key={i} 
-                                    className={`relative aspect-[3/4] bg-white rounded-2xl overflow-hidden shadow-sm border border-zinc-100 cursor-zoom-in active:opacity-75 transition-all select-none ${img.enabled === false ? 'grayscale opacity-50' : ''}`}
+                                    className={`flex-shrink-0 w-36 aspect-[3/4] bg-white rounded-2xl overflow-hidden snap-start relative cursor-zoom-in border border-zinc-200 active:opacity-75 transition-all select-none ${img.enabled === false ? 'grayscale opacity-50' : ''}`}
                                     onClick={() => handleImgClick(img)}
                                     onTouchStart={(e) => handleImgTouchStart(e, img)}
                                     onTouchEnd={handleImgTouchEnd}
                                     onTouchMove={handleImgTouchEnd}
                                     onContextMenu={(e) => { e.preventDefault(); toggleImageEnabled(img); }}
-                                  >
-                                      <img src={img.url} className="w-full h-full object-cover pointer-events-none" />
-                                      {img.enabled === false && (
-                                        <div className="absolute inset-0 flex items-center justify-center backdrop-blur-[1px] bg-zinc-900/10">
-                                          <div className="bg-black/80 text-white p-2 rounded-full shadow-lg"><EyeOff size={24} /></div>
-                                        </div>
-                                      )}
-                                  </div>
-                              ))}
-                          </div>
-                      ) : (
-                          <div className="p-6 bg-white border border-zinc-100 rounded-2xl text-center flex flex-col items-center justify-center gap-2">
-                              <div className="w-12 h-12 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mb-2"><Sparkles size={24} /></div>
-                              <p className="text-sm font-medium text-zinc-600">Nessuna foto generata</p>
-                              <p className="text-xs text-zinc-400">Le immagini V-TON appariranno qui a fine elaborazione.</p>
-                          </div>
-                      )}
-                  </section>
-
-                  <section>
-                      <h3 className="font-bold text-lg mb-4 text-zinc-900">Scatti Originali</h3>
-                      <div className="flex overflow-x-auto gap-3 pb-4 snap-x hide-scrollbar">
-                          {selectedProduct.product_images?.filter(img => img.type !== 'processed').map((img, i) => (
-                              <div 
-                                  key={i} 
-                                  className={`flex-shrink-0 w-36 aspect-[3/4] bg-white rounded-2xl overflow-hidden snap-start relative cursor-zoom-in border border-zinc-200 active:opacity-75 transition-all select-none ${img.enabled === false ? 'grayscale opacity-50' : ''}`}
-                                  onClick={() => handleImgClick(img)}
-                                  onTouchStart={(e) => handleImgTouchStart(e, img)}
-                                  onTouchEnd={handleImgTouchEnd}
-                                  onTouchMove={handleImgTouchEnd}
-                                  onContextMenu={(e) => { e.preventDefault(); toggleImageEnabled(img); }}
-                              >
-                                  <img src={img.url} className="w-full h-full object-cover pointer-events-none" />
-                                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-zinc-900/80 via-zinc-900/30 to-transparent p-3 pt-8 pointer-events-none">
-                                      <p className="text-white text-[10px] tracking-wider font-bold uppercase">{img.type.replace('_', ' ')}</p>
-                                  </div>
-                                  {img.enabled === false && (
-                                    <div className="absolute inset-0 flex items-center justify-center backdrop-blur-[1px] bg-zinc-900/10 pointer-events-none">
-                                      <div className="bg-black/80 text-white p-2 rounded-full shadow-lg"><EyeOff size={20} /></div>
+                                >
+                                    <img src={img.url} className="w-full h-full object-cover pointer-events-none" />
+                                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-zinc-900/80 via-zinc-900/30 to-transparent p-3 pt-8 pointer-events-none">
+                                        <p className="text-white text-[10px] tracking-wider font-bold uppercase">{img.type.replace('_', ' ')}</p>
                                     </div>
-                                  )}
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* PULSANTE CHIEDI DI RIFARE (Visibile solo se NON c'è già una richiesta in corso) */}
+                        {!activeRedoRecord && selectedProduct.product_images?.filter(img => img.type === 'processed').length > 0 && (
+                          <div className="mt-4">
+                            {redoPromptOpen ? (
+                              <div className="bg-zinc-100 border border-zinc-200 rounded-2xl p-4 animate-in fade-in zoom-in-95 duration-200">
+                                <label className="text-xs font-bold text-zinc-600 uppercase ml-1 mb-2 block">Motivazione (Opzionale)</label>
+                                <textarea 
+                                  placeholder="Es. colori diversi, texture rovinata..." 
+                                  value={redoReason} 
+                                  onChange={e => setRedoReason(e.target.value)} 
+                                  rows={2}
+                                  className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-3 text-sm text-zinc-900 font-medium focus:ring-2 focus:ring-zinc-900 outline-none resize-none mb-3"
+                                />
+                                <div className="flex gap-2">
+                                  <button onClick={() => setRedoPromptOpen(false)} className="flex-1 py-3 bg-zinc-200 text-zinc-700 font-bold rounded-xl active:scale-95 transition-all">Annulla</button>
+                                  <button onClick={handleSubmitRedo} disabled={isSubmittingRedo} className="flex-1 py-3 bg-zinc-900 text-white font-bold rounded-xl active:scale-95 transition-all flex justify-center items-center gap-2">
+                                    {isSubmittingRedo ? <Loader2 size={16} className="animate-spin" /> : <MessageSquare size={16} />} 
+                                    Invia Richiesta
+                                  </button>
+                                </div>
                               </div>
-                          ))}
-                      </div>
-                  </section>
-              </div>
+                            ) : (
+                              <button 
+                                onClick={() => setRedoPromptOpen(true)}
+                                className="w-full flex items-center justify-center gap-2 py-3.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-bold rounded-xl active:scale-95 transition-all border border-zinc-200"
+                              >
+                                <RotateCcw size={18} /> Chiedi di rifare
+                              </button>
+                            )}
+                          </div>
+                        )}
+                    </section>
+                </div>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {fullscreenImage && (
         <div className="fixed inset-0 z-[80] bg-zinc-950/95 flex items-center justify-center backdrop-blur-md animate-in fade-in duration-200">
