@@ -1,7 +1,7 @@
 "use client"
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop, RotateCcw, AlertCircle, MessageSquare } from 'lucide-react';
+import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop, RotateCcw, AlertCircle, MessageSquare, Wand2 } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import PullToRefresh from 'react-simple-pull-to-refresh';
 import Cropper from 'react-easy-crop';
@@ -103,6 +103,8 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [modalTouchStartPos, setModalTouchStartPos] = useState(null);
+
+  const [isBulkSeoGenerating, setIsBulkSeoGenerating] = useState(false);
 
   const fetchData = async () => {
     const { data: seasonsData } = await supabase.from('collections').select('*').order('created_at', { ascending: false });
@@ -311,6 +313,91 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
     setIsBulkReparsing(false);
     alert(`Rielaborazione Completata!\n\n✅ Successi: ${successCount}\n❌ Falliti: ${failCount}`);
+    setSelectedItemIds([]);
+    setIsSelectionMode(false);
+  };
+
+  const handleBulkSeoGenerate = async () => {
+    if (selectedItemIds.length === 0) return;
+    setIsBulkSeoGenerating(true);
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const productId of selectedItemIds) {
+      const product = products.find(p => p.id === productId);
+      if (!product) continue;
+
+      // 1. Recupera il nome della categoria da Supabase
+      let categoryName = '';
+      if (product.category_id) {
+        const { data: catData } = await supabase.from('categories').select('name').eq('id', product.category_id).single();
+        if (catData) categoryName = catData.name;
+      }
+
+      // 2. Organizza le immagini (l'etichetta per prima, le altre dopo)
+      const tagImage = product.product_images?.find(img => img.type === 'tag');
+      const tagUrl = tagImage ? tagImage.url : (product.product_images?.[0]?.url || '');
+      const otherImages = product.product_images?.filter(img => img.id !== tagImage?.id).map(img => img.url) || [];
+
+      if (!tagUrl && otherImages.length === 0) {
+        failCount++;
+        continue;
+      }
+
+      try {
+        // 3. Chiamata alla tua API generate-seo
+        const apiResponse = await fetch('/api/generate-seo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            modelCode: product.model_code || '',
+            variantCode: product.variant_code || '',
+            categoryName: categoryName,
+            tagUrl: tagUrl,
+            imageUrls: otherImages
+          })
+        });
+
+        if (!apiResponse.ok) throw new Error('Errore API SEO');
+        
+        const parsedData = await apiResponse.json();
+        
+        // 4. Se la risposta è valida, aggiorniamo il database
+        if (parsedData.title && parsedData.description) {
+          const { error } = await supabase.from('products').update({
+            title: parsedData.title,
+            description: parsedData.description
+          }).eq('id', product.id);
+
+          if (!error) {
+            // Aggiorna lo stato locale per riflettere le modifiche senza ricaricare la pagina
+            setProducts(prev => prev.map(p => p.id === product.id ? { 
+              ...p, 
+              title: parsedData.title, 
+              description: parsedData.description 
+            } : p));
+            
+            // Se la scheda del prodotto è aperta, aggiornala
+            if (selectedProduct && selectedProduct.id === product.id) {
+               setSelectedProduct(prev => ({...prev, title: parsedData.title, description: parsedData.description}));
+            }
+            
+            successCount++;
+          } else {
+            failCount++;
+          }
+        } else {
+          failCount++;
+        }
+      } catch (err) {
+        console.error(err);
+        failCount++;
+      }
+    }
+
+    setIsBulkSeoGenerating(false);
+    alert(`Generazione Titoli e Descrizioni Completata!\n\n✅ Successi: ${successCount}\n❌ Falliti: ${failCount}`);
     setSelectedItemIds([]);
     setIsSelectionMode(false);
   };
@@ -665,13 +752,28 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
             <button onClick={handleSelectAll} className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white" title="Seleziona Tutti">
               <CheckCheck size={22} strokeWidth={2} />
             </button>
-            <button onClick={handleBulkReparse} disabled={isBulkReparsing || isDownloading} className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" title="Rielabora Etichette AI">
+            
+            {/* TASTO ESISTENTE: Reparse Etichette */}
+            <button onClick={handleBulkReparse} disabled={isBulkReparsing || isBulkSeoGenerating || isDownloading} className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" title="Rielabora Etichette AI">
               {isBulkReparsing ? <Loader2 size={22} className="animate-spin" /> : <RefreshCw size={22} strokeWidth={2} />}
             </button>
-            <button onClick={handleBulkDownload} disabled={isDownloading || isBulkReparsing} className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" title="Scarica foto">
+
+            {/* NUOVO TASTO: Generazione SEO */}
+            <button 
+              onClick={handleBulkSeoGenerate} 
+              disabled={isBulkSeoGenerating || isBulkReparsing || isDownloading} 
+              className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" 
+              title="Genera Titolo & Descrizione (SEO)"
+            >
+              {isBulkSeoGenerating ? <Loader2 size={22} className="animate-spin" /> : <Wand2 size={22} strokeWidth={2} />}
+            </button>
+
+            {/* TASTO ESISTENTE: Scarica Foto */}
+            <button onClick={handleBulkDownload} disabled={isDownloading || isBulkReparsing || isBulkSeoGenerating} className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" title="Scarica foto">
               {isDownloading ? <Loader2 size={22} className="animate-spin" /> : <Download size={22} strokeWidth={2} />}
             </button>
-            <button onClick={() => openDeleteModal('bulk')} disabled={isDownloading || isBulkReparsing} className="p-2.5 rounded-full hover:bg-indigo-500/50 text-indigo-100 hover:text-white active:scale-95 transition-all disabled:opacity-50" title="Elimina"><Trash2 size={22} strokeWidth={2} /></button>
+            
+            <button onClick={() => openDeleteModal('bulk')} disabled={isDownloading || isBulkReparsing || isBulkSeoGenerating} className="p-2.5 rounded-full hover:bg-indigo-500/50 text-indigo-100 hover:text-white active:scale-95 transition-all disabled:opacity-50" title="Elimina"><Trash2 size={22} strokeWidth={2} /></button>
           </div>
         </div>
       )}
