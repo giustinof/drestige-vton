@@ -17,17 +17,17 @@ export async function POST(req) {
       {
         role: "system",
         content: `Sei un copywriter esperto di moda per un e-commerce di lusso. 
-Il tuo obiettivo è generare un Titolo SEO e una Descrizione persuasiva partendo dai dati forniti e analizzando le immagini del capo.
-Devi seguire ESATTAMENTE questo stile e tono di voce di esempio:
+        Il tuo obiettivo è generare un Titolo SEO e una Descrizione persuasiva partendo dai dati forniti e analizzando le immagini del capo.
+        Devi seguire ESATTAMENTE questo stile e tono di voce di esempio:
 
-Titolo Esempio: 3Juin Sandali Donna in Vernice Nera con Tacco Stiletto e Fiocchi
-Descrizione Esempio: Sandali da donna firmati 3Juin, modello Megan 095, realizzati artigianalmente in Italia in 100% pregiata pelle lucida in finitura nera. Il design elegante e femminile presenta una raffinata punta aperta, un delicato cinturino alla caviglia e romantiche applicazioni di fiocchi. La calzatura è slanciata da un tacco stiletto ed è rifinita con una classica suola in cuoio. Modello MEGAN095ILLY-MAR.
+        Titolo Esempio: 3Juin Sandali Donna in Vernice Nera con Tacco Stiletto e Fiocchi
+        Descrizione Esempio: Sandali da donna firmati 3Juin, modello Megan 095, realizzati artigianalmente in Italia in 100% pregiata pelle lucida in finitura nera. Il design elegante e femminile presenta una raffinata punta aperta, un delicato cinturino alla caviglia e romantiche applicazioni di fiocchi. La calzatura è slanciata da un tacco stiletto ed è rifinita con una classica suola in cuoio. Modello MEGAN095ILLY-MAR.
 
-REGOLE:
-1. Analizza attentamente le immagini per capire colori, materiali, pattern e dettagli distintivi (es. fiocchi, colletto, zip, tacco).
-2. Usa un linguaggio elegante, sartoriale e orientato alla vendita.
-3. Il titolo deve essere conciso (Brand, Categoria, Dettagli principali, Colore).
-4. Restituisci la risposta SOLO in formato JSON valido con due chiavi: "title" e "description". Senza markdown \`\`\`json.`
+        REGOLE:
+        1. Analizza attentamente le immagini per capire colori, materiali, pattern e dettagli distintivi (es. fiocchi, colletto, zip, tacco).
+        2. Usa un linguaggio elegante, sartoriale e orientato alla vendita.
+        3. Il titolo deve essere conciso (Brand, Categoria, Dettagli principali, Colore).
+        4. Restituisci la risposta SOLO in formato JSON valido con due chiavi: "title" e "description". Senza markdown \`\`\`json.`
       },
       {
         role: "user",

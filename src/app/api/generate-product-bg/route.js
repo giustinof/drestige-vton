@@ -34,7 +34,9 @@ export async function POST(req) {
     formData.append('background.color', '#FFFFFF');
     
     // Manteniamo l'AI attiva SOLO per generare l'ombra di ancoraggio
-    formData.append('shadow.mode', 'ai.soft');
+    //formData.append('shadow.mode', 'ai.soft');
+
+    formData.append('shadow.mode', 'original');
     
     // Aumentato leggermente il padding (0.15) per far "respirare" meglio la scarpa nell'inquadratura
     formData.append('padding', '0.15'); 
