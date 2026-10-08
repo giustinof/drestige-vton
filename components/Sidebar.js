@@ -65,7 +65,7 @@ export default function Sidebar({ isOpen, onClose, currentView, setCurrentView, 
             onClick={onVersionClick}
             className="text-center cursor-pointer hover:bg-zinc-50 p-2 rounded-xl transition-colors select-none"
           >
-            <p className="text-xs text-zinc-500 font-bold underline decoration-zinc-300 underline-offset-4">Drestige V-TON v.1.2.5c</p>
+            <p className="text-xs text-zinc-500 font-bold underline decoration-zinc-300 underline-offset-4">Drestige V-TON v.1.2.5d</p>
           </div>
         </div>
       </div>

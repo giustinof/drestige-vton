@@ -92,7 +92,7 @@ REGOLE TASSATIVE:
     const protocol = req.headers.get('x-forwarded-proto') || 'http';
     const host = req.headers.get('host');
     const isLocal = process.env.NODE_ENV === 'development';
-    const baseUrl = isLocal ? 'http://localhost:3000' : `${protocol}://${host}`;
+    const baseUrl = isLocal ? 'http://localhost:3001' : `${protocol}://${host}`;
 
     const imagePromises = rawImages.map(async (imgObj) => {
       try {

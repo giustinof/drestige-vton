@@ -29,17 +29,16 @@ export async function POST(req) {
     const formData = new FormData();
     formData.append('imageFile', imageBlob, 'product.jpg');
     
-    // 1. Forza lo sfondo bianco puro (SENZA hashtag, come da documentazione)
+    // 1. Sfondo bianco puro
     formData.append('background.color', 'FFFFFF'); 
     
-    // 2. Disattiva le ombre. Questo forza il "cut-out" nudo e crudo e 
-    // porta il costo della chiamata a 1 singolo credito.
-    formData.append('shadow.mode', 'none'); 
+    // RIMOSSA LA RIGA shadow.mode: omettendo il parametro, l'API restituirà 
+    // lo scontorno "nudo e crudo" senza calcolare ombre, al costo base di 1 credito.
     
-    // 3. Spazio bianco attorno al prodotto
+    // 2. Spazio bianco attorno al prodotto
     formData.append('padding', '0.15'); 
     
-    // 4. Formato leggero
+    // 3. Formato leggero
     formData.append('export.format', 'jpeg');
     
     // --- FASE 3: Chiamata a Photoroom ---
@@ -55,7 +54,9 @@ export async function POST(req) {
         const contentType = photoroomResponse.headers.get("content-type");
         if (contentType && contentType.includes("application/json")) {
             const errData = await photoroomResponse.json();
-            throw new Error(`Errore Photoroom: ${errData.message || photoroomResponse.status}`);
+            // Migliorato il log: ora estrarrà il VERO motivo per cui Photoroom rifiuta la foto
+            const errorDetail = errData.error || errData.message || JSON.stringify(errData);
+            throw new Error(`Dettaglio: ${errorDetail}`);
         }
         throw new Error(`Errore Server Photoroom: ${photoroomResponse.status}`);
     }
