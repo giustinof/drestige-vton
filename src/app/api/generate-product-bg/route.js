@@ -29,19 +29,19 @@ export async function POST(req) {
     const formData = new FormData();
     formData.append('imageFile', imageBlob, 'product.jpg');
     
-    // 1. Forza lo sfondo bianco puro
-    formData.append('background.color', '#FFFFFF');
+    // 1. Forza lo sfondo bianco puro (SENZA hashtag, come da documentazione)
+    formData.append('background.color', 'FFFFFF'); 
     
-    // 2. Disattiva completamente il calcolo delle ombre. 
-    // Questo garantisce uno scontorno netto del prodotto senza artefatti o pezzi di sfondo residui.
+    // 2. Disattiva le ombre. Questo forza il "cut-out" nudo e crudo e 
+    // porta il costo della chiamata a 1 singolo credito.
     formData.append('shadow.mode', 'none'); 
     
     // 3. Spazio bianco attorno al prodotto
     formData.append('padding', '0.15'); 
     
-    // 4. Compressione per il web
+    // 4. Formato leggero
     formData.append('export.format', 'jpeg');
-
+    
     // --- FASE 3: Chiamata a Photoroom ---
     const photoroomResponse = await fetch('https://image-api.photoroom.com/v2/edit', {
       method: 'POST',
