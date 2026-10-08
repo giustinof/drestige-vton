@@ -29,19 +29,17 @@ export async function POST(req) {
     const formData = new FormData();
     formData.append('imageFile', imageBlob, 'product.jpg');
     
-    // IL SEGRETO È QUI: Rimuoviamo il prompt testuale generativo!
-    // Usiamo il colore esadecimale per forzare uno sfondo bianco puro stile e-commerce.
+    // 1. Forza lo sfondo bianco puro
     formData.append('background.color', '#FFFFFF');
     
-    // Manteniamo l'AI attiva SOLO per generare l'ombra di ancoraggio
-    //formData.append('shadow.mode', 'ai.soft');
-
-    formData.append('shadow.mode', 'original');
+    // 2. Disattiva completamente il calcolo delle ombre. 
+    // Questo garantisce uno scontorno netto del prodotto senza artefatti o pezzi di sfondo residui.
+    formData.append('shadow.mode', 'none'); 
     
-    // Aumentato leggermente il padding (0.15) per far "respirare" meglio la scarpa nell'inquadratura
+    // 3. Spazio bianco attorno al prodotto
     formData.append('padding', '0.15'); 
     
-    // Esportazione
+    // 4. Compressione per il web
     formData.append('export.format', 'jpeg');
 
     // --- FASE 3: Chiamata a Photoroom ---
