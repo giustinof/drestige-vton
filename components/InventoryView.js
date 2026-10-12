@@ -1,7 +1,7 @@
 "use client"
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop, RotateCcw, AlertCircle, MessageSquare, Wand2 } from 'lucide-react';
+import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, MoreVertical, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop, RotateCcw, AlertCircle, MessageSquare, Wand2, CheckCircle2, Info, Eraser, Undo2, Images } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import PullToRefresh from 'react-simple-pull-to-refresh';
 import Cropper from 'react-easy-crop';
@@ -59,7 +59,15 @@ const SkeletonGrid = () => (
   </div>
 );
 
-export default function InventoryView({ viewMode, workerId, refreshKey, searchQuery, activeFilter, scannedEan, setScannedEan }) {
+const ACCESSORY_CATEGORIES = [
+  '5cf1ce77-c2a7-4454-b1dc-43679937c471', 
+  '6673c18d-e2c7-4a69-a067-2d0d20e9c169', 
+  'd96de87b-c5d1-4fc8-8458-7fcddecb5419', 
+  'ecb540fc-fbc7-44e1-becd-fb75a913f4a5', 
+  'ee53a790-04fb-4224-b0bd-9189df283fe9'  
+];
+
+export default function InventoryView({ viewMode, workerId, refreshKey, searchQuery, activeFilter, scannedEan, setScannedEan, onRedoProduct, onSelectionModeChange }) {
   const [products, setProducts] = useState([]);
   const [seasons, setSeasons] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -95,6 +103,8 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const [isSubmittingRedo, setIsSubmittingRedo] = useState(false);
   const [isProcessingRedo, setIsProcessingRedo] = useState(false);
 
+  const [isBulkActionsMenuOpen, setIsBulkActionsMenuOpen] = useState(false);
+
   const touchTimeout = useRef(null);
   const isLongPress = useRef(false);
   const imgTouchTimeout = useRef(null);
@@ -105,12 +115,23 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const [modalTouchStartPos, setModalTouchStartPos] = useState(null);
 
   const [isBulkSeoGenerating, setIsBulkSeoGenerating] = useState(false);
+  const [processQueue, setProcessQueue] = useState({ active: false, total: 0, current: 0, success: 0, fail: 0 });
+
+  // Custom Alert
+  const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '', type: 'info' });
+  const showAlert = (title, message, type = 'info') => setCustomAlert({ visible: true, title, message, type });
+  const closeAlert = () => setCustomAlert({ ...customAlert, visible: false });
+
+  useEffect(() => {
+    if (onSelectionModeChange) {
+      onSelectionModeChange(isSelectionMode);
+    }
+  }, [isSelectionMode, onSelectionModeChange]);
 
   const fetchData = async () => {
     const { data: seasonsData } = await supabase.from('collections').select('*').order('created_at', { ascending: false });
     if (seasonsData) setSeasons(seasonsData);
 
-    // Modifica: Aggiunto redo(*) alla select per recuperare lo storico dei rifacimenti
     let query = supabase.from('products').select(`*, product_images(id, url, type, enabled), collections(*), redo(*)`).order('created_at', { ascending: false });
     if (viewMode === 'my-products') query = query.eq('worker_id', workerId);
 
@@ -155,7 +176,176 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  const handleProductClick = (product) => { if (isLongPress.current) return; window.history.pushState({ modal: 'product' }, ''); setSelectedProduct(product); setRedoPromptOpen(false); setRedoReason(''); };
+  const handleBulkReprocessPhotos = async () => {
+    if (selectedItemIds.length === 0) return;
+    
+    // Inizializza il widget e chiudi la modale di selezione superiore
+    setProcessQueue({ active: true, total: selectedItemIds.length, current: 0, success: 0, fail: 0 });
+    setIsSelectionMode(false);
+
+    let success = 0;
+    let fail = 0;
+    const itemsToProcess = [...selectedItemIds]; // Copia per evitare mutazioni
+    setSelectedItemIds([]);
+
+    for (let i = 0; i < itemsToProcess.length; i++) {
+      const productId = itemsToProcess[i];
+      const product = products.find(p => p.id === productId);
+      
+      if (!product) { 
+        fail++; 
+        setProcessQueue(prev => ({ ...prev, current: i + 1, fail }));
+        continue; 
+      }
+
+      try {
+        // 1. Elimina le foto AI precedenti (Storage + DB)
+        const processedImages = product.product_images?.filter(img => img.type === 'processed') || [];
+        if (processedImages.length > 0) {
+          const paths = processedImages.map(img => {
+            try { return img.url.split('/product-images/')[1]; } catch(e) { return null; }
+          }).filter(Boolean);
+          
+          if (paths.length > 0) await supabase.storage.from('product-images').remove(paths);
+          await supabase.from('product_images').delete().in('id', processedImages.map(img => img.id));
+        }
+
+        // Imposta a "processing" nel database
+        await supabase.from('products').update({ status: 'processing' }).eq('id', product.id);
+
+        // 2. Raccogli solo gli scatti raw_item (escludiamo i tag testuali per la foto)
+        const rawImages = product.product_images?.filter(img => img.type === 'raw_item') || [];
+        const isAccessory = ACCESSORY_CATEGORIES.includes(product.category_id);
+
+        // 3. Esegui la generazione foto per foto
+        for (const raw of rawImages) {
+          const needsFlatLay = !isAccessory && (raw.angle === 'front' || raw.angle === 'back');
+          const endpoint = needsFlatLay ? '/api/generate-flatlay' : '/api/generate-product-bg';
+          
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              productId: product.id,
+              garmentImageUrl: raw.url,
+              angle: raw.angle || 'sconosciuto'
+            })
+          });
+
+          if (!response.ok) throw new Error(`Errore API per ${raw.angle}`);
+        }
+
+        // Rimetti a completed
+        await supabase.from('products').update({ status: 'completed' }).eq('id', product.id);
+        success++;
+      } catch (err) {
+        console.error(err);
+        fail++;
+        await supabase.from('products').update({ status: 'draft' }).eq('id', product.id);
+      }
+
+      // Aggiorna contatore widget
+      setProcessQueue(prev => ({ ...prev, current: i + 1, success, fail }));
+    }
+
+    // A fine ciclo nascondi il widget e mostra un avviso finale
+    setTimeout(() => {
+      setProcessQueue(prev => ({ ...prev, active: false }));
+      showAlert("Rielaborazione Foto Terminata", `L'operazione è conclusa.\n✅ Successi: ${success}\n❌ Falliti: ${fail}`, "success");
+      fetchData(); // Ricarichiamo i dati per mostrare le nuove foto
+    }, 2000);
+  };
+
+  const handleProductClick = (product) => { 
+    // Ignoriamo i clic generati dal long press per evitare la "schizofrenia"
+    if (isLongPress.current) return; 
+
+    // Se stiamo selezionando, un TAP normale basta a selezionare il prodotto (senza aprire la scheda)
+    if (isSelectionMode) {
+      toggleSelection(product.id);
+      return;
+    }
+
+    // Comportamento normale (Apertura scheda)
+    window.history.pushState({ modal: 'product' }, ''); 
+    setSelectedProduct(product); 
+    setRedoPromptOpen(false); 
+    setRedoReason(''); 
+  };
+
+  const handleTouchStart = (e, product) => { 
+    isLongPress.current = false; 
+    touchTimeout.current = setTimeout(() => { 
+      isLongPress.current = true; 
+      handleContextMenuTrigger(e.touches[0].clientX, e.touches[0].clientY, product); 
+    }, 500); 
+  };
+
+  const handleTouchEnd = () => { 
+    if (touchTimeout.current) clearTimeout(touchTimeout.current); 
+    // Ritardiamo lo sblocco per scartare l'evento onClick nativo subito successivo
+    setTimeout(() => { isLongPress.current = false; }, 100);
+  };
+
+  const handleTouchMove = () => { 
+    if (touchTimeout.current) clearTimeout(touchTimeout.current); 
+  };
+
+  const handleRightClick = (e, product) => { 
+    e.preventDefault(); 
+    // Se il timer touch ha già attivato la selezione, impediamo al contextmenu nativo di disattivarla
+    if (isLongPress.current) return;
+    handleContextMenuTrigger(e.clientX, e.clientY, product); 
+  };
+
+  const toggleSelection = (productId) => { 
+    setSelectedItemIds(prev => {
+      const isCurrentlySelected = prev.includes(productId);
+      const newSelection = isCurrentlySelected ? prev.filter(id => id !== productId) : [...prev, productId];
+      // Se l'utente deseleziona l'ultimo, chiudiamo la modalità selezione
+      if (newSelection.length === 0) {
+        setIsSelectionMode(false);
+      }
+      return newSelection;
+    }); 
+    if (window.navigator?.vibrate) window.navigator.vibrate(50); 
+  };
+
+  const handleContextMenuTrigger = (x, y, product) => {
+    if (isSelectionMode) {
+      toggleSelection(product.id);
+    } else {
+      const safeX = x + 180 > window.innerWidth ? window.innerWidth - 196 : x;
+      const safeY = y + 150 > window.innerHeight ? window.innerHeight - 166 : y;
+      if (window.navigator?.vibrate) window.navigator.vibrate(100);
+      setContextMenu({ visible: true, x: safeX, y: safeY, product });
+    }
+  };
+
+  // Stessi accorgimenti per le gesture delle immagini interne
+  const handleImgTouchStart = (e, img) => { 
+    isImgLongPress.current = false; 
+    imgTouchTimeout.current = setTimeout(() => { 
+      isImgLongPress.current = true; 
+      toggleImageEnabled(img); 
+    }, 500); 
+  };
+  const handleImgTouchEnd = () => { 
+    if (imgTouchTimeout.current) clearTimeout(imgTouchTimeout.current); 
+    setTimeout(() => { isImgLongPress.current = false; }, 100);
+  };
+  const handleImgClick = (img) => { 
+    if (isImgLongPress.current) return; 
+    openFullscreenImage(img); 
+  };
+
+  const toggleImageEnabled = async (img) => {
+    const newStatus = !img.enabled;
+    if (window.navigator?.vibrate) window.navigator.vibrate(50);
+    setSelectedProduct(prev => ({ ...prev, product_images: prev.product_images.map(i => i.id === img.id ? { ...i, enabled: newStatus } : i) }));
+    setProducts(prev => prev.map(p => p.id === selectedProduct.id ? { ...p, product_images: p.product_images.map(i => i.id === img.id ? { ...i, enabled: newStatus } : i) } : p));
+    await supabase.from('product_images').update({ enabled: newStatus }).eq('id', img.id);
+  };
   const closeProductModal = () => { if (window.history.state?.modal === 'product') window.history.back(); else setSelectedProduct(null); };
   const openFullscreenImage = (img) => { window.history.pushState({ modal: 'photo' }, ''); setFullscreenImage(img); setIsEditingImage(false); setZoom(1); };
   const closeFullscreenImage = () => { if (window.history.state?.modal === 'photo') window.history.back(); else { setFullscreenImage(null); setIsEditingImage(false); } };
@@ -169,34 +359,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     if (contextMenu.visible) document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
   }, [contextMenu.visible]);
-
-  const toggleSelection = (productId) => { setSelectedItemIds(prev => prev.includes(productId) ? prev.filter(id => id !== productId) : [...prev, productId]); if (window.navigator?.vibrate) window.navigator.vibrate(50); };
-  
-  const handleContextMenuTrigger = (x, y, product) => {
-    if (isSelectionMode) toggleSelection(product.id);
-    else {
-      const menuWidth = 180; const menuHeight = 150; 
-      const safeX = x + menuWidth > window.innerWidth ? window.innerWidth - menuWidth - 16 : x;
-      const safeY = y + menuHeight > window.innerHeight ? window.innerHeight - menuHeight - 16 : y;
-      if (window.navigator?.vibrate) window.navigator.vibrate(100);
-      setContextMenu({ visible: true, x: safeX, y: safeY, product });
-    }
-  };
-  const handleTouchStart = (e, product) => { isLongPress.current = false; touchTimeout.current = setTimeout(() => { isLongPress.current = true; handleContextMenuTrigger(e.touches[0].clientX, e.touches[0].clientY, product); }, 500); };
-  const handleTouchEnd = () => { if (touchTimeout.current) clearTimeout(touchTimeout.current); };
-  const handleTouchMove = () => { if (touchTimeout.current) clearTimeout(touchTimeout.current); };
-  const handleRightClick = (e, product) => { e.preventDefault(); handleContextMenuTrigger(e.clientX, e.clientY, product); };
-
-  const toggleImageEnabled = async (img) => {
-    const newStatus = !img.enabled;
-    if (window.navigator?.vibrate) window.navigator.vibrate(50);
-    setSelectedProduct(prev => ({ ...prev, product_images: prev.product_images.map(i => i.id === img.id ? { ...i, enabled: newStatus } : i) }));
-    setProducts(prev => prev.map(p => p.id === selectedProduct.id ? { ...p, product_images: p.product_images.map(i => i.id === img.id ? { ...i, enabled: newStatus } : i) } : p));
-    await supabase.from('product_images').update({ enabled: newStatus }).eq('id', img.id);
-  };
-  const handleImgTouchStart = (e, img) => { isImgLongPress.current = false; imgTouchTimeout.current = setTimeout(() => { isImgLongPress.current = true; toggleImageEnabled(img); }, 500); };
-  const handleImgTouchEnd = () => { if (imgTouchTimeout.current) clearTimeout(imgTouchTimeout.current); };
-  const handleImgClick = (img) => { if (isImgLongPress.current) return; openFullscreenImage(img); };
 
   const displayedProducts = products.filter(p => {
     if (searchQuery && !p.model_code?.toLowerCase().includes(searchQuery.toLowerCase()) && !p.ean?.includes(searchQuery)) return false;
@@ -266,6 +428,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   };
 
   const handleBulkReparse = async () => {
+    setIsBulkActionsMenuOpen(false);
     if (selectedItemIds.length === 0) return;
     setIsBulkReparsing(true);
 
@@ -318,6 +481,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   };
 
   const handleBulkSeoGenerate = async () => {
+    setIsBulkActionsMenuOpen(false);
     if (selectedItemIds.length === 0) return;
     setIsBulkSeoGenerating(true);
 
@@ -742,38 +906,76 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
   return (
     <>
+      {processQueue.active && (
+        <div className="fixed top-[76px] left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-96 bg-zinc-900/95 backdrop-blur-md text-white rounded-xl px-4 py-3 shadow-xl z-40 animate-in slide-in-from-top-4 border border-zinc-800">
+           <div className="flex justify-between items-center mb-2">
+              <h4 className="text-sm font-bold flex items-center gap-2">
+                <Loader2 size={14} className="animate-spin text-indigo-400" />
+                Rielaborazione in corso...
+              </h4>
+              <span className="text-xs font-medium text-zinc-400">
+                {processQueue.current} / {processQueue.total}
+              </span>
+           </div>
+           <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+              <div 
+                className="bg-indigo-500 h-full transition-all duration-500 ease-out" 
+                style={{ width: `${(processQueue.current / processQueue.total) * 100}%` }}>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* MENU SELEZIONE AGGIORNATO */}
       {isSelectionMode && (
-        <div className="fixed top-0 left-0 right-0 z-50 h-[72px] bg-indigo-600 text-white px-4 flex items-center justify-between shadow-lg animate-in slide-in-from-top-4 duration-200">
+        <div className="fixed bottom-0 left-0 right-0 z-50 h-[80px] bg-white border-t border-zinc-200 px-4 flex items-center justify-between shadow-[0_-10px_40px_rgba(0,0,0,0.05)] animate-in slide-in-from-bottom-8 duration-200 md:bottom-6 md:left-1/2 md:-translate-x-1/2 md:w-max md:rounded-full md:px-6 md:h-16 md:border md:shadow-xl">
           <div className="flex items-center gap-3">
-            <button onClick={() => { setIsSelectionMode(false); setSelectedItemIds([]); }} className="p-2 -ml-2 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white"><X size={24} strokeWidth={2.5} /></button>
-            <span className="font-bold text-[19px] tracking-tight">{selectedItemIds.length} selezionati</span>
+            <button onClick={() => { setIsSelectionMode(false); setSelectedItemIds([]); setIsBulkActionsMenuOpen(false); }} className="p-2 -ml-2 rounded-full hover:bg-zinc-100 active:scale-95 transition-all text-zinc-600"><X size={20} strokeWidth={2.5} /></button>
+            <span className="font-bold text-[17px] tracking-tight text-zinc-900">{selectedItemIds.length} <span className="hidden md:inline">selezionati</span></span>
           </div>
-          <div className="flex items-center gap-1">
-            <button onClick={handleSelectAll} className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white" title="Seleziona Tutti">
-              <CheckCheck size={22} strokeWidth={2} />
+          
+          <div className="flex items-center gap-2 ml-4">
+            <button onClick={handleSelectAll} className="p-2 rounded-full hover:bg-zinc-100 active:scale-95 transition-all text-zinc-700" title="Seleziona Tutti">
+              <CheckCheck size={20} strokeWidth={2.5} />
             </button>
             
-            {/* TASTO ESISTENTE: Reparse Etichette */}
-            <button onClick={handleBulkReparse} disabled={isBulkReparsing || isBulkSeoGenerating || isDownloading} className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" title="Rielabora Etichette AI">
-              {isBulkReparsing ? <Loader2 size={22} className="animate-spin" /> : <RefreshCw size={22} strokeWidth={2} />}
+            <div className="h-6 w-px bg-zinc-200 mx-1"></div>
+
+            <button onClick={handleBulkDownload} disabled={isDownloading || isBulkReparsing || isBulkSeoGenerating || processQueue.active} className="p-2 rounded-full hover:bg-zinc-100 active:scale-95 transition-all text-zinc-700 disabled:opacity-50" title="Scarica foto">
+              {isDownloading ? <Loader2 size={20} className="animate-spin" /> : <Download size={20} strokeWidth={2.5} />}
             </button>
 
-            {/* NUOVO TASTO: Generazione SEO */}
-            <button 
-              onClick={handleBulkSeoGenerate} 
-              disabled={isBulkSeoGenerating || isBulkReparsing || isDownloading} 
-              className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" 
-              title="Genera Titolo & Descrizione (SEO)"
-            >
-              {isBulkSeoGenerating ? <Loader2 size={22} className="animate-spin" /> : <Wand2 size={22} strokeWidth={2} />}
+            <button onClick={() => openDeleteModal('bulk')} disabled={isDownloading || isBulkReparsing || isBulkSeoGenerating || processQueue.active} className="p-2 rounded-full hover:bg-red-50 text-red-600 active:scale-95 transition-all disabled:opacity-50" title="Elimina">
+              <Trash2 size={20} strokeWidth={2.5} />
             </button>
 
-            {/* TASTO ESISTENTE: Scarica Foto */}
-            <button onClick={handleBulkDownload} disabled={isDownloading || isBulkReparsing || isBulkSeoGenerating} className="p-2.5 rounded-full hover:bg-indigo-500/50 active:scale-95 transition-all text-white disabled:opacity-50" title="Scarica foto">
-              {isDownloading ? <Loader2 size={22} className="animate-spin" /> : <Download size={22} strokeWidth={2} />}
-            </button>
-            
-            <button onClick={() => openDeleteModal('bulk')} disabled={isDownloading || isBulkReparsing || isBulkSeoGenerating} className="p-2.5 rounded-full hover:bg-indigo-500/50 text-indigo-100 hover:text-white active:scale-95 transition-all disabled:opacity-50" title="Elimina"><Trash2 size={22} strokeWidth={2} /></button>
+            {/* Menu Opzioni Extra per non affollare la barra */}
+            <div className="relative">
+              <button 
+                onClick={() => setIsBulkActionsMenuOpen(!isBulkActionsMenuOpen)}
+                className={`p-2 rounded-full active:scale-95 transition-all ${isBulkActionsMenuOpen ? 'bg-indigo-50 text-indigo-600' : 'hover:bg-zinc-100 text-zinc-700'}`}
+              >
+                <MoreVertical size={20} strokeWidth={2.5} />
+              </button>
+
+              {isBulkActionsMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsBulkActionsMenuOpen(false)}></div>
+                  <div className="absolute bottom-full right-0 mb-4 w-56 bg-white rounded-2xl shadow-2xl border border-zinc-100 p-2 z-50 flex flex-col gap-1 animate-in zoom-in-95 origin-bottom-right">
+                    <button onClick={handleBulkReparse} disabled={isBulkReparsing || processQueue.active} className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-zinc-50 text-sm font-semibold text-zinc-700 transition-colors disabled:opacity-50 text-left">
+                      {isBulkReparsing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Rielabora Etichette
+                    </button>
+                    <button onClick={handleBulkSeoGenerate} disabled={isBulkSeoGenerating || processQueue.active} className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-zinc-50 text-sm font-semibold text-zinc-700 transition-colors disabled:opacity-50 text-left">
+                      {isBulkSeoGenerating ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />} Genera Testi SEO
+                    </button>
+                    <button onClick={handleBulkReprocessPhotos} disabled={processQueue.active} className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-zinc-50 text-sm font-semibold text-zinc-700 transition-colors disabled:opacity-50 text-left">
+                      <Images size={16} /> Rielabora Foto AI
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
           </div>
         </div>
       )}
@@ -1127,6 +1329,20 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
             </>
           )}
 
+        </div>
+      )}
+      {/* --- CUSTOM ALERT OVERLAY --- */}
+      {customAlert.visible && (
+        <div className="fixed inset-0 z-[120] bg-zinc-950/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl relative animate-in zoom-in-95 duration-200 text-center flex flex-col items-center">
+            {customAlert.type === 'success' && <div className="w-16 h-16 bg-emerald-50 text-emerald-500 rounded-full flex items-center justify-center mb-4 border-4 border-emerald-100"><CheckCircle2 size={32} strokeWidth={2.5} /></div>}
+            {customAlert.type === 'error' && <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mb-4 border-4 border-red-100"><AlertTriangle size={32} strokeWidth={2.5} /></div>}
+            {customAlert.type === 'info' && <div className="w-16 h-16 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mb-4 border-4 border-blue-100"><Info size={32} strokeWidth={2.5} /></div>}
+            
+            <h3 className="text-xl font-black text-zinc-900 mb-2">{customAlert.title}</h3>
+            <p className="text-sm text-zinc-600 font-medium mb-6 whitespace-pre-line leading-relaxed">{customAlert.message}</p>
+            <button onClick={closeAlert} className="w-full bg-zinc-900 text-white font-bold py-3.5 rounded-xl hover:bg-zinc-800 active:scale-95 transition-all shadow-lg">Ok, chiudi</button>
+          </div>
         </div>
       )}
     </>

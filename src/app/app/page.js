@@ -71,6 +71,8 @@ export default function AppHome() {
 
   const tagCaptureRef = useRef(null);
 
+  const [isSelecting, setIsSelecting] = useState(false);
+
   // AGGIUNTO FILTRO SCARICATI
   const filterOptions = [
     { id: 'all', label: 'Tutti' },
@@ -214,7 +216,8 @@ export default function AppHome() {
             searchQuery={searchQuery} 
             activeFilter={activeFilter} 
             scannedEan={scannedEan} 
-            setScannedEan={setScannedEan} 
+            setScannedEan={setScannedEan}
+            onSelectionModeChange={setIsSelecting}
             onRedoProduct={(eanOrModel) => {
               if (tagCaptureRef.current) {
                 tagCaptureRef.current.click();
@@ -224,10 +227,10 @@ export default function AppHome() {
         )}
       </main>
 
-      {currentView !== 'seasons' && (
+      {currentView !== 'seasons' && !isSelecting && (
         <div className="fixed bottom-8 left-0 right-0 flex justify-center z-20 pointer-events-none animate-in slide-in-from-bottom-8">
           <input type="file" accept="image/*" capture="environment" className="hidden" ref={tagCaptureRef} onChange={handleInitialTagCapture} />
-          <button onClick={() => tagCaptureRef.current.click()} className="pointer-events-auto w-16 h-16 bg-zinc-950 text-white rounded-full flex items-center justify-center shadow-lg active:scale-90 border-4 border-zinc-50"><Plus size={32} strokeWidth={2.5} /></button>
+          <button onClick={() => tagCaptureRef.current.click()} className="pointer-events-auto w-16 h-16 bg-zinc-950 text-white rounded-full flex items-center justify-center shadow-lg active:scale-95 border-4 border-zinc-50"><Plus size={32} strokeWidth={2.5} /></button>
         </div>
       )}
 
