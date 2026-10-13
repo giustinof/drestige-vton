@@ -132,7 +132,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     const { data: seasonsData } = await supabase.from('collections').select('*').order('created_at', { ascending: false });
     if (seasonsData) setSeasons(seasonsData);
 
-    let query = supabase.from('products').select(`*, product_images(id, url, type, enabled), collections(*), redo(*)`).order('created_at', { ascending: false });
+    let query = supabase.from('products').select(`*, product_images(id, url, type, enabled, angle), collections(*), redo(*)`).order('created_at', { ascending: false });
     if (viewMode === 'my-products') query = query.eq('worker_id', workerId);
 
     const { data, error } = await query;
