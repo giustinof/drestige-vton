@@ -313,7 +313,10 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
   const handleContextMenuTrigger = (x, y, product) => {
     if (isSelectionMode) {
-      toggleSelection(product.id);
+      // Seleziona solo se NON è già selezionato per evitare lo sfarfallio da long press
+      if (!selectedItemIds.includes(product.id)) {
+        toggleSelection(product.id);
+      }
     } else {
       const safeX = x + 180 > window.innerWidth ? window.innerWidth - 196 : x;
       const safeY = y + 150 > window.innerHeight ? window.innerHeight - 166 : y;
@@ -363,15 +366,13 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const displayedProducts = products.filter(p => {
     if (searchQuery && !p.model_code?.toLowerCase().includes(searchQuery.toLowerCase()) && !p.ean?.includes(searchQuery)) return false;
     if (activeFilter === 'downloaded') return p.status === 'downloaded';
-    
     if (p.status === 'downloaded') return false;
     const processed = p.product_images?.filter(img => img.type === 'processed').length || 0;
     const raws = p.product_images?.filter(img => img.type !== 'processed').length || 0;
-    
     if (activeFilter === 'processing' && (p.status !== 'processing' || processed > 0)) return false;
     if (activeFilter === 'done' && processed === 0) return false;
-    if (activeFilter === 'no-photo' && processed === 0 && raws === 0) return false;
-    
+    // NUOVO CONTROLLO SENZA FOTO (Sia elaborati che raw a 0)
+    if (activeFilter === 'no-photo' && (processed > 0 || raws < 0)) return false;
     return true;
   });
 
@@ -907,19 +908,19 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   return (
     <>
       {processQueue.active && (
-        <div className="fixed top-[76px] left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-96 bg-zinc-900/95 backdrop-blur-md text-white rounded-xl px-4 py-3 shadow-xl z-40 animate-in slide-in-from-top-4 border border-zinc-800">
+        <div className="fixed top-[197px] md:top-[88px] left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-96 bg-white text-zinc-900 rounded-xl px-4 py-3 shadow-md z-30 animate-in slide-in-from-top-2 border border-zinc-200">
            <div className="flex justify-between items-center mb-2">
               <h4 className="text-sm font-bold flex items-center gap-2">
-                <Loader2 size={14} className="animate-spin text-indigo-400" />
+                <Loader2 size={14} className="animate-spin text-emerald-500" />
                 Rielaborazione in corso...
               </h4>
-              <span className="text-xs font-medium text-zinc-400">
+              <span className="text-xs font-medium text-zinc-500">
                 {processQueue.current} / {processQueue.total}
               </span>
            </div>
-           <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+           <div className="w-full bg-zinc-100 rounded-full h-1.5 overflow-hidden">
               <div 
-                className="bg-indigo-500 h-full transition-all duration-500 ease-out" 
+                className="bg-emerald-500 h-full transition-all duration-500 ease-out" 
                 style={{ width: `${(processQueue.current / processQueue.total) * 100}%` }}>
               </div>
            </div>
