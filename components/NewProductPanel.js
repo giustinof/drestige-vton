@@ -1,7 +1,8 @@
 "use client"
 import { useState, useEffect } from 'react';
 import { Camera, X, Loader2, Check, Info } from 'lucide-react';
-import { supabase } from '../lib/supabase'; 
+import { supabase } from '../lib/supabase';
+import imageCompression from 'browser-image-compression';
 
 export default function NewProductPanel({ onClose, workerId, categories, initialTagFile }) {
   const [productImages, setProductImages] = useState([]); 
@@ -73,17 +74,33 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     processTag();
   }, [initialTagFile]);
 
-  // 2. Acquisizione guidata
-  const handleProductCapture = (e, angle) => {
+  // 2. Acquisizione guidata (con compressione salva-iOS)
+  const handleProductCapture = async (e, angle) => {
     const file = e.target.files[0];
     if (!file) return;
-    
-    setProductImages(prev => {
-      const existing = prev.filter(p => p.angle !== angle);
-      return [...existing, { file, preview: URL.createObjectURL(file), angle }];
-    });
-    
-    e.target.value = null; 
+
+    try {
+      const options = {
+        maxSizeMB: 1,
+        maxWidthOrHeight: 1920,
+        useWebWorker: true,
+        fileType: 'image/jpeg'
+      };
+
+      // Comprimi il file
+      const compressedFile = await imageCompression(file, options);
+
+      setProductImages(prev => {
+        const existing = prev.filter(p => p.angle !== angle);
+        return [...existing, { file: compressedFile, preview: URL.createObjectURL(compressedFile), angle }];
+      });
+
+    } catch (error) {
+      console.error("Errore durante la compressione:", error);
+      alert("Errore nell'elaborazione della foto. Riprova.");
+    } finally {
+      e.target.value = null; 
+    }
   };
 
   // 3. Salvataggio

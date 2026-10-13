@@ -7,6 +7,7 @@ import InventoryView from '../../../components/InventoryView';
 import SeasonsView from '../../../components/SeasonsView';
 import { Plus, Menu, Search, X, ScanLine } from 'lucide-react';
 import { Html5QrcodeScanner } from 'html5-qrcode';
+import imageCompression from 'browser-image-compression';
 
 // --- COMPONENTE SCANNER EAN ---
 function BarcodeScannerModal({ onClose, onScan }) {
@@ -127,10 +128,33 @@ export default function AppHome() {
   };
   const handleLogout = () => { localStorage.removeItem('drestige_worker'); setWorker(null); setIsSidebarOpen(false); };
 
-  const handleInitialTagCapture = (e) => {
+  const handleInitialTagCapture = async (e) => {
     const file = e.target.files[0];
-    if (file) { setCapturedTagFile(file); window.history.pushState({ modalOpen: 'newProduct' }, ''); setIsNewProductPanelOpen(true); }
-    e.target.value = null; 
+    if (!file) return;
+
+    try {
+      // 1. Configura la compressione salvavita per iOS
+      const options = {
+        maxSizeMB: 1,            // Peso massimo 1MB
+        maxWidthOrHeight: 1920,  // Dimensione massima lato lungo
+        useWebWorker: true,      // Usa i worker per non bloccare la UI
+        fileType: 'image/jpeg'   // Forza JPEG (aiuta se l'iPhone passa file anomali)
+      };
+
+      // 2. Comprimi il file
+      const compressedFile = await imageCompression(file, options);
+
+      // 3. Ora passa il file leggero al pannello
+      setCapturedTagFile(compressedFile); 
+      window.history.pushState({ modalOpen: 'newProduct' }, ''); 
+      setIsNewProductPanelOpen(true);
+      
+    } catch (error) {
+      console.error("Errore durante la compressione:", error);
+      alert("Errore nell'elaborazione della foto. Riprova.");
+    } finally {
+      e.target.value = null; 
+    }
   };
 
   if (loading) return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-medium">Caricamento...</div>;
