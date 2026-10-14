@@ -649,6 +649,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const handleBulkDownload = async () => {
     if (selectedItemIds.length === 0) return;
     setIsDownloading(true);
+    setIsBulkActionsMenuOpen(false);
 
     const ACCESSORY_CATEGORIES = [
       '5cf1ce77-c2a7-4454-b1dc-43679937c471', 
@@ -657,6 +658,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       'ecb540fc-fbc7-44e1-becd-fb75a913f4a5', 
       'ee53a790-04fb-4224-b0bd-9189df283fe9'  
     ];
+    // L'ordine desiderato in base all'angolo (angle)
     const accessoryOrder = ['side', 'front', 'back', 'top', 'sole', 'detail'];
     const apparelOrder = ['front', 'back', 'inner_tag', 'detail_1', 'detail_2'];
 
@@ -669,15 +671,20 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         const product = products.find(p => p.id === productId);
         if (!product) continue;
 
-        let validImages = product.product_images?.filter(img => img.enabled !== false) || [];
-        if (validImages.length === 0) continue; 
+        // PRENDIAMO SOLO LE FOTO ELABORATE DALL'AI (SCARTIAMO RAW E TAG)
+        let processedImages = product.product_images?.filter(
+          img => img.enabled !== false && img.type === 'processed'
+        ) || [];
+        
+        if (processedImages.length === 0) continue; 
 
         const isAccessory = ACCESSORY_CATEGORIES.includes(product.category_id);
         const targetOrder = isAccessory ? accessoryOrder : apparelOrder;
 
-        validImages.sort((a, b) => {
-          let indexA = targetOrder.indexOf(a.type);
-          let indexB = targetOrder.indexOf(b.type);
+        // ORDINIAMO IN BASE ALL'ANGOLO (img.angle) INVECE CHE AL TYPE
+        processedImages.sort((a, b) => {
+          let indexA = targetOrder.indexOf(a.angle);
+          let indexB = targetOrder.indexOf(b.angle);
           if (indexA === -1) indexA = 999;
           if (indexB === -1) indexB = 999;
           return indexA - indexB;
@@ -690,8 +697,8 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         const safeVariant = (product.variant_code || '').replace(/[^a-zA-Z0-9_-]/g, '');
         const baseFileName = `${safeModel}${safeVariant}`;
 
-        for (let i = 0; i < validImages.length; i++) {
-          const img = validImages[i];
+        for (let i = 0; i < processedImages.length; i++) {
+          const img = processedImages[i];
           const fileName = i === 0 ? `${baseFileName}.jpg` : `${baseFileName}_${i}.jpg`;
           
           const response = await fetch(img.url);
@@ -705,7 +712,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       }
 
       if (downloadedProductIds.length === 0) {
-        alert("Nessuna foto abilitata da scaricare nei prodotti selezionati.");
+        showAlert("Attenzione", "Nessuna foto elaborata pronta da scaricare nei prodotti selezionati.", "error");
         setIsDownloading(false);
         return;
       }
@@ -722,7 +729,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
     } catch (err) {
       console.error(err);
-      alert("Si è verificato un errore durante la creazione dello ZIP.");
+      showAlert("Errore", "Si è verificato un errore durante la creazione dello ZIP.", "error");
     } finally {
       setIsDownloading(false);
     }
