@@ -1,7 +1,7 @@
 "use client"
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, MoreVertical, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop, RotateCcw, AlertCircle, MessageSquare, Wand2, CheckCircle2, Info, Eraser, Undo2, Images } from 'lucide-react';
+import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, MoreVertical, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop, RotateCcw, AlertCircle, MessageSquare, Wand2, CheckCircle2, Info, Eraser, Undo2, Images, ArrowLeftRight } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import PullToRefresh from 'react-simple-pull-to-refresh';
 import Cropper from 'react-easy-crop';
@@ -117,6 +117,8 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const [isBulkSeoGenerating, setIsBulkSeoGenerating] = useState(false);
   const [processQueue, setProcessQueue] = useState({ active: false, total: 0, current: 0, success: 0, fail: 0 });
 
+  const [isSwapping, setIsSwapping] = useState(false);
+
   // Custom Alert
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '', type: 'info' });
   const showAlert = (title, message, type = 'info') => setCustomAlert({ visible: true, title, message, type });
@@ -152,6 +154,54 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   };
 
   useEffect(() => { setLoading(true); fetchData().then(() => setLoading(false)); }, [viewMode, workerId, refreshKey]);
+
+  const handleSwapRawProcessed = async () => {
+    if (!fullscreenImage || !selectedProduct) return;
+    
+    const currentType = fullscreenImage.type;
+    if (currentType !== 'processed' && currentType !== 'raw_item') return;
+
+    const targetType = currentType === 'processed' ? 'raw_item' : 'processed';
+    
+    // Trova la foto corrispondente (stesso angolo, ma tipo opposto)
+    const counterpart = selectedProduct.product_images.find(
+      img => img.type === targetType && img.angle === fullscreenImage.angle
+    );
+
+    if (!counterpart) {
+      showAlert("Attenzione", "Impossibile trovare la foto corrispondente per questo angolo.", "error");
+      return;
+    }
+
+    setIsSwapping(true);
+    try {
+      // 1. Aggiorna il DB invertendo i tipi
+      await supabase.from('product_images').update({ type: targetType }).eq('id', fullscreenImage.id);
+      await supabase.from('product_images').update({ type: currentType }).eq('id', counterpart.id);
+
+      // 2. Aggiorna lo stato locale
+      const updatedImages = selectedProduct.product_images.map(img => {
+        if (img.id === fullscreenImage.id) return { ...img, type: targetType };
+        if (img.id === counterpart.id) return { ...img, type: currentType };
+        return img;
+      });
+
+      const updatedProduct = { ...selectedProduct, product_images: updatedImages };
+      
+      setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
+      setSelectedProduct(updatedProduct);
+      
+      // 3. Mantieni a schermo la nuova foto (ora diventata del tipo che stavi guardando)
+      setFullscreenImage({ ...counterpart, type: currentType });
+      
+      showAlert("Scambio completato", "Le foto sono state invertite con successo.", "success");
+    } catch (e) {
+      console.error(e);
+      showAlert("Errore", "Si è verificato un errore durante lo scambio.", "error");
+    } finally {
+      setIsSwapping(false);
+    }
+  };
 
   useEffect(() => {
     if (scannedEan && products.length > 0) {
@@ -1299,14 +1349,15 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
               <button onClick={closeFullscreenImage} className="absolute top-6 right-6 w-12 h-12 bg-white/10 rounded-full flex items-center justify-center text-white hover:bg-white/20 active:scale-90 transition-all z-[90] backdrop-blur-lg"><X size={24} strokeWidth={2.5} /></button>
               
               <div className="absolute top-6 left-6 flex flex-col gap-3 z-[90]">
-                {fullscreenImage.type !== 'processed' && (
+                {(fullscreenImage.type === 'processed' || fullscreenImage.type === 'raw_item') && 
+                 selectedProduct.product_images?.some(img => img.angle === fullscreenImage.angle && img.type === (fullscreenImage.type === 'processed' ? 'raw_item' : 'processed')) && (
                   <button 
-                    onClick={handleReparseTag} 
-                    disabled={isReparsing}
-                    className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-3 rounded-full hover:bg-indigo-700 active:scale-95 transition-all shadow-lg disabled:opacity-50"
+                    onClick={handleSwapRawProcessed} 
+                    disabled={isSwapping}
+                    className="flex items-center gap-2 bg-zinc-800/90 backdrop-blur-lg text-white px-4 py-3 rounded-full hover:bg-zinc-700 active:scale-95 transition-all shadow-lg w-max disabled:opacity-50"
                   >
-                    {isReparsing ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
-                    {isReparsing ? 'Analisi in corso...' : 'Rianalizza Dati'}
+                    {isSwapping ? <Loader2 size={18} className="animate-spin" /> : <ArrowLeftRight size={18} />} 
+                    {fullscreenImage.type === 'processed' ? 'Usa Originale come Definitiva' : 'Usa come Definitiva'}
                   </button>
                 )}
                 <button 
