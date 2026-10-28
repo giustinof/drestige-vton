@@ -33,7 +33,7 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
 
   const clothingPoses = [
     { angle: 'front', label: 'Fronte (Flat Lay)', required: true },
-    { angle: 'back', label: 'Retro (Flat Lay)', required: true },
+    { angle: 'back', label: 'Retro (Flat Lay)', required: false },
     { angle: 'inner_tag', label: 'Etichetta Interna', required: false },
     { angle: 'detail_1', label: 'Dettaglio 1', required: false },
     { angle: 'detail_2', label: 'Dettaglio 2', required: false }
