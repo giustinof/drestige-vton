@@ -339,7 +339,7 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
               isOcrProcessing || 
               !formData.category_id || 
               !selectedSeason ||
-              (!isAccessory && (!productImages.some(img => img.angle === 'front') || !productImages.some(img => img.angle === 'back'))) ||
+              (!isAccessory && !productImages.some(img => img.angle === 'front')) ||
               (isAccessory && productImages.length === 0)
             }
             className="w-full py-4 rounded-2xl font-black text-white text-lg transition-all disabled:bg-gray-200 disabled:text-gray-400 bg-black active:scale-95 shadow-lg"
