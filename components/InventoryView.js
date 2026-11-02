@@ -1202,7 +1202,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                 <ChevronRight size={32} strokeWidth={2.5} />
               </button>
             )}
-            
+
             <div 
               className={`w-full h-full bg-zinc-50 flex flex-col shadow-2xl ${isDragging ? '' : 'transition-transform duration-300 ease-out'}`}
               style={{ transform: `translateX(${swipeOffset}px)` }}
@@ -1237,7 +1237,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                     </div>
                 </header>
                 
-                <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8 max-w-3xl mx-auto w-full pb-32">
+                <div id="product-scroll-container" className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8 max-w-3xl mx-auto w-full pb-32">
                     
                     {activeRedoRecord && (
                       <div className="bg-orange-50 border border-orange-200 rounded-2xl p-5 shadow-sm">
