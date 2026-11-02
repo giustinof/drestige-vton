@@ -65,20 +65,20 @@ const ACCESSORY_CATEGORIES = [
 ];
 
 export default function InventoryView({ viewMode, workerId, refreshKey, searchQuery, activeFilter, scannedEan, setScannedEan, onRedoProduct, onSelectionModeChange }) {
-  const [products, setProducts] = useState([]);
-  const [seasons, setSeasons] = useState([]);
-  const [loading, setLoading] = useState(true);
-  
-  // PAGINAZIONE STATE
+  // --- STATI PAGINAZIONE ---
+  const ITEMS_PER_PAGE = 500;
   const [currentPage, setCurrentPage] = useState(() => {
     if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const page = parseInt(params.get('page'));
-      return !isNaN(page) && page > 0 ? page : 1;
+      const saved = localStorage.getItem('inventoryCurrentPage');
+      return saved ? parseInt(saved, 10) : 1;
     }
     return 1;
   });
-  const ITEMS_PER_PAGE = 500;
+  const [totalItems, setTotalItems] = useState(0);
+
+  const [products, setProducts] = useState([]);
+  const [seasons, setSeasons] = useState([]);
+  const [loading, setLoading] = useState(true);
   
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [fullscreenImage, setFullscreenImage] = useState(null);
@@ -129,22 +129,17 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const showAlert = (title, message, type = 'info') => setCustomAlert({ visible: true, title, message, type });
   const closeAlert = () => setCustomAlert({ ...customAlert, visible: false });
 
-  // Salva la pagina nell'URL quando cambia
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const url = new URL(window.location);
-      if (currentPage > 1) {
-        url.searchParams.set('page', currentPage);
-      } else {
-        url.searchParams.delete('page');
-      }
-      window.history.replaceState({}, '', url);
-    }
-  }, [currentPage]);
-
+  // Effetto per reset pagina se cambiano ricerca o filtri base
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, activeFilter]);
+  }, [searchQuery, viewMode]); // Non resettiamo su activeFilter per evitare reset continui sui sub-filtri lato client
+
+  // Effetto per salvare la pagina su localStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('inventoryCurrentPage', currentPage.toString());
+    }
+  }, [currentPage]);
 
   useEffect(() => {
     if (onSelectionModeChange) {
@@ -156,68 +151,48 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     const { data: seasonsData } = await supabase.from('collections').select('*').order('created_at', { ascending: false });
     if (seasonsData) setSeasons(seasonsData);
 
-    let baseQuery = supabase.from('products');
-    if (viewMode === 'my-products') baseQuery = baseQuery.eq('worker_id', workerId);
+    const from = (currentPage - 1) * ITEMS_PER_PAGE;
+    const to = from + ITEMS_PER_PAGE - 1;
 
-    const { count, error: countError } = await baseQuery.select('*', { count: 'exact', head: true });
-    
-    if (countError || !count) {
-       setProducts([]);
-       return;
+    let query = supabase
+      .from('products')
+      .select(`*, product_images(id, url, type, enabled, angle), collections(*), redo(*)`, { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, to); // Paginazione Server-Side!
+
+    if (viewMode === 'my-products') query = query.eq('worker_id', workerId);
+
+    // Filtri Server-Side (Ricerca globale ed esclusione scaricati)
+    if (searchQuery) {
+       query = query.or(`model_code.ilike.%${searchQuery}%,ean.ilike.%${searchQuery}%`);
     }
 
-    const step = 1000;
-    const promises = [];
-    for (let i = 0; i < count; i += step) {
-       const q = baseQuery.select(`*, product_images(id, url, type, enabled, angle), collections(*), redo(*)`)
-                          .order('created_at', { ascending: false })
-                          .range(i, i + step - 1);
-       promises.push(q);
+    if (activeFilter === 'downloaded') {
+       query = query.eq('status', 'downloaded');
+    } else {
+       query = query.neq('status', 'downloaded');
     }
 
-    const results = await Promise.all(promises);
-    let allProducts = [];
-    for (const res of results) {
-       if (res.data) allProducts = [...allProducts, ...res.data];
-    }
+    const { data, error, count } = await query;
+    if (!error && data) {
+      setProducts(data);
+      if (count !== null) setTotalItems(count);
 
-    setProducts(allProducts);
-
-    const params = new URLSearchParams(window.location.search);
-    const sharedProductId = params.get('product');
-    if (sharedProductId) {
-      const sharedProduct = allProducts.find(p => p.id === sharedProductId);
-      if (sharedProduct) {
-        window.history.pushState({ modal: 'product' }, '');
-        setSelectedProduct(sharedProduct);
-        params.delete('product');
-        window.history.replaceState(null, '', `${window.location.pathname}${params.toString() ? '?' + params.toString() : ''}`);
+      const params = new URLSearchParams(window.location.search);
+      const sharedProductId = params.get('product');
+      if (sharedProductId) {
+        const sharedProduct = data.find(p => p.id === sharedProductId);
+        if (sharedProduct) {
+          window.history.pushState({ modal: 'product' }, '');
+          setSelectedProduct(sharedProduct);
+          window.history.replaceState(null, '', window.location.pathname);
+        }
       }
     }
   };
 
-  useEffect(() => { setLoading(true); fetchData().then(() => setLoading(false)); }, [viewMode, workerId, refreshKey]);
+  useEffect(() => { setLoading(true); fetchData().then(() => setLoading(false)); }, [viewMode, workerId, refreshKey, currentPage, searchQuery, activeFilter]);
 
-  // DERIVIAMO I PRODOTTI VISUALIZZATI (Serve anche per le frecce/tastiera)
-  const displayedProducts = products.filter(p => {
-    if (searchQuery && !p.model_code?.toLowerCase().includes(searchQuery.toLowerCase()) && !p.ean?.includes(searchQuery)) return false;
-    if (activeFilter === 'downloaded') return p.status === 'downloaded';
-    if (p.status === 'downloaded') return false;
-    const processed = p.product_images?.filter(img => img.type === 'processed').length || 0;
-    const raws = p.product_images?.filter(img => img.type !== 'processed').length || 0;
-    if (activeFilter === 'processing' && (p.status !== 'processing' || processed > 0)) return false;
-    if (activeFilter === 'done' && processed === 0) return false;
-    if (activeFilter === 'no-photo' && (processed > 0 || raws < 0)) return false;
-    return true;
-  });
-
-  const sortedDisplayedProducts = [...displayedProducts].sort((a, b) => {
-    const aNeedsRedo = a.redo?.some(r => !r.done) ? 1 : 0;
-    const bNeedsRedo = b.redo?.some(r => !r.done) ? 1 : 0;
-    return bNeedsRedo - aNeedsRedo; 
-  });
-
-  // GESTIONE NAVIGAZIONE SCHEDA (Frecce + Tastiera)
   const handleNavigateProduct = (direction, e) => {
     if (e) e.stopPropagation();
     if (!selectedProduct) return;
@@ -239,7 +214,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   // SHORTCUT DA TASTIERA
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // Ignora se ci sono altri modal aperti che intercettano le frecce (es. photo fullscreen, input testuali)
       if (!selectedProduct || fullscreenImage || isEditingImage || editingProduct || deleteModal || contextMenu.visible || redoPromptOpen) return;
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
@@ -252,8 +226,10 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
   const handleSwapRawProcessed = async () => {
     if (!fullscreenImage || !selectedProduct) return;
+    
     const currentType = fullscreenImage.type;
     if (currentType !== 'processed' && currentType !== 'raw_item') return;
+
     const targetType = currentType === 'processed' ? 'raw_item' : 'processed';
     
     const counterpart = selectedProduct.product_images.find(
@@ -277,9 +253,11 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       });
 
       const updatedProduct = { ...selectedProduct, product_images: updatedImages };
+      
       setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
       setSelectedProduct(updatedProduct);
       setFullscreenImage({ ...counterpart, type: currentType });
+      
       showAlert("Scambio completato", "Le foto sono state invertite con successo.", "success");
     } catch (e) {
       console.error(e);
@@ -298,6 +276,8 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     }
   }, [scannedEan, products, setScannedEan]);
 
+  useEffect(() => { if (isSelectionMode && selectedItemIds.length === 0) setIsSelectionMode(false); }, [selectedItemIds, isSelectionMode]);
+
   useEffect(() => {
     const handlePopState = (e) => {
       const state = e.state?.modal;
@@ -312,13 +292,12 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
   const handleBulkReprocessPhotos = async () => {
     if (selectedItemIds.length === 0) return;
-    
     setProcessQueue({ active: true, total: selectedItemIds.length, current: 0, success: 0, fail: 0 });
     setIsSelectionMode(false);
 
     let success = 0;
     let fail = 0;
-    const itemsToProcess = [...selectedItemIds]; 
+    const itemsToProcess = [...selectedItemIds];
     setSelectedItemIds([]);
 
     for (let i = 0; i < itemsToProcess.length; i++) {
@@ -371,7 +350,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         fail++;
         await supabase.from('products').update({ status: 'draft' }).eq('id', product.id);
       }
-
       setProcessQueue(prev => ({ ...prev, current: i + 1, success, fail }));
     }
 
@@ -421,7 +399,9 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     setSelectedItemIds(prev => {
       const isCurrentlySelected = prev.includes(productId);
       const newSelection = isCurrentlySelected ? prev.filter(id => id !== productId) : [...prev, productId];
-      if (newSelection.length === 0) setIsSelectionMode(false);
+      if (newSelection.length === 0) {
+        setIsSelectionMode(false);
+      }
       return newSelection;
     }); 
     if (window.navigator?.vibrate) window.navigator.vibrate(50); 
@@ -463,6 +443,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     setProducts(prev => prev.map(p => p.id === selectedProduct.id ? { ...p, product_images: p.product_images.map(i => i.id === img.id ? { ...i, enabled: newStatus } : i) } : p));
     await supabase.from('product_images').update({ enabled: newStatus }).eq('id', img.id);
   };
+  
   const closeProductModal = () => { if (window.history.state?.modal === 'product') window.history.back(); else setSelectedProduct(null); };
   const openFullscreenImage = (img) => { window.history.pushState({ modal: 'photo' }, ''); setFullscreenImage(img); setIsEditingImage(false); setZoom(1); };
   const closeFullscreenImage = () => { if (window.history.state?.modal === 'photo') window.history.back(); else { setFullscreenImage(null); setIsEditingImage(false); } };
@@ -477,25 +458,32 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     return () => document.removeEventListener('click', handleClickOutside);
   }, [contextMenu.visible]);
 
-  // LOGICA DI PAGINAZIONE CLIENT-SIDE
-  const totalPages = Math.ceil(sortedDisplayedProducts.length / ITEMS_PER_PAGE) || 1;
-  const safeCurrentPage = Math.min(currentPage, totalPages);
-  
-  useEffect(() => {
-    if (currentPage > totalPages && totalPages > 0) {
-      setCurrentPage(totalPages);
-    }
-  }, [totalPages, currentPage]);
+  // Filtri secondari mantenuti lato client sul set restituito di 500 elementi
+  const displayedProducts = products.filter(p => {
+    // Escludiamo downloaded e ricerchiamo tramite server-side.
+    if (activeFilter === 'downloaded') return p.status === 'downloaded';
+    if (p.status === 'downloaded') return false;
 
-  const startIndex = (safeCurrentPage - 1) * ITEMS_PER_PAGE;
-  const paginatedProducts = sortedDisplayedProducts.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+    const processed = p.product_images?.filter(img => img.type === 'processed').length || 0;
+    const raws = p.product_images?.filter(img => img.type !== 'processed').length || 0;
+    if (activeFilter === 'processing' && (p.status !== 'processing' || processed > 0)) return false;
+    if (activeFilter === 'done' && processed === 0) return false;
+    if (activeFilter === 'no-photo' && (processed > 0 || raws < 0)) return false;
+    return true;
+  });
+
+  const sortedDisplayedProducts = [...displayedProducts].sort((a, b) => {
+    const aNeedsRedo = a.redo?.some(r => !r.done) ? 1 : 0;
+    const bNeedsRedo = b.redo?.some(r => !r.done) ? 1 : 0;
+    return bNeedsRedo - aNeedsRedo; 
+  });
 
   const handleSelectAll = () => {
-    if (selectedItemIds.length === paginatedProducts.length && paginatedProducts.length > 0) {
+    if (selectedItemIds.length === sortedDisplayedProducts.length && sortedDisplayedProducts.length > 0) {
       setSelectedItemIds([]);
       setIsSelectionMode(false);
     } else {
-      setSelectedItemIds(paginatedProducts.map(p => p.id));
+      setSelectedItemIds(sortedDisplayedProducts.map(p => p.id));
     }
   };
 
@@ -546,15 +534,20 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     for (const productId of selectedItemIds) {
       const product = products.find(p => p.id === productId);
       if (!product) continue;
+
       const rawImage = product.product_images?.find(img => img.type !== 'processed');
       if (!rawImage) { failCount++; continue; }
+
       try {
         const response = await fetch(rawImage.url);
         const blob = await response.blob();
+        
         const formData = new FormData();
         formData.append('image', blob, 'tag_image.jpg');
+        
         const apiResponse = await fetch('/api/parse-tag', { method: 'POST', body: formData });
         if (!apiResponse.ok) throw new Error('Errore API');
+        
         const parsedData = await apiResponse.json();
         
         if (parsedData.model_code) {
@@ -566,7 +559,10 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
           if (!error) {
             setProducts(prev => prev.map(p => p.id === product.id ? { 
-              ...p, model_code: parsedData.model_code, variant_code: parsedData.variant_code || '', ean: parsedData.ean || '' 
+              ...p, 
+              model_code: parsedData.model_code, 
+              variant_code: parsedData.variant_code || '', 
+              ean: parsedData.ean || '' 
             } : p));
             successCount++;
           } else failCount++;
@@ -591,11 +587,13 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     for (const productId of selectedItemIds) {
       const product = products.find(p => p.id === productId);
       if (!product) continue;
+
       let categoryName = '';
       if (product.category_id) {
         const { data: catData } = await supabase.from('categories').select('name').eq('id', product.category_id).single();
         if (catData) categoryName = catData.name;
       }
+
       const tagImage = product.product_images?.find(img => img.type === 'tag');
       const tagUrl = tagImage ? tagImage.url : (product.product_images?.[0]?.url || '');
       const otherImages = product.product_images?.filter(img => img.id !== tagImage?.id).map(img => img.url) || [];
@@ -607,23 +605,47 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
       try {
         const apiResponse = await fetch('/api/generate-seo', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ modelCode: product.model_code || '', variantCode: product.variant_code || '', categoryName: categoryName, tagUrl: tagUrl, imageUrls: otherImages })
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            modelCode: product.model_code || '',
+            variantCode: product.variant_code || '',
+            categoryName: categoryName,
+            tagUrl: tagUrl,
+            imageUrls: otherImages
+          })
         });
+
         if (!apiResponse.ok) throw new Error('Errore API SEO');
         const parsedData = await apiResponse.json();
         
         if (parsedData.title && parsedData.description) {
-          const { error } = await supabase.from('products').update({ title: parsedData.title, description: parsedData.description }).eq('id', product.id);
+          const { error } = await supabase.from('products').update({
+            title: parsedData.title,
+            description: parsedData.description
+          }).eq('id', product.id);
+
           if (!error) {
-            setProducts(prev => prev.map(p => p.id === product.id ? { ...p, title: parsedData.title, description: parsedData.description } : p));
+            setProducts(prev => prev.map(p => p.id === product.id ? { 
+              ...p, 
+              title: parsedData.title, 
+              description: parsedData.description 
+            } : p));
+            
             if (selectedProduct && selectedProduct.id === product.id) {
                setSelectedProduct(prev => ({...prev, title: parsedData.title, description: parsedData.description}));
             }
             successCount++;
-          } else { failCount++; }
-        } else { failCount++; }
-      } catch (err) { failCount++; }
+          } else {
+            failCount++;
+          }
+        } else {
+          failCount++;
+        }
+      } catch (err) {
+        console.error(err);
+        failCount++;
+      }
     }
 
     setIsBulkSeoGenerating(false);
@@ -638,26 +660,51 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       const blob = await getCroppedImg(fullscreenImage.url, croppedAreaPixels, '#ffffff');
       const oldUrlParts = fullscreenImage.url.split('/product-images/');
       const oldPath = oldUrlParts.length > 1 ? oldUrlParts[1] : null;
-
       const newFileName = `${Date.now()}_edited.jpg`;
-      const { data: uploadData, error: uploadError } = await supabase.storage.from('product-images').upload(newFileName, blob, { contentType: 'image/jpeg', upsert: false });
+
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('product-images')
+        .upload(newFileName, blob, { contentType: 'image/jpeg', upsert: false });
+
       if (uploadError) throw uploadError;
 
-      const { data: { publicUrl } } = supabase.storage.from('product-images').getPublicUrl(newFileName);
-      const { error: dbError } = await supabase.from('product_images').update({ url: publicUrl }).eq('id', fullscreenImage.id);
+      const { data: { publicUrl } } = supabase.storage
+        .from('product-images')
+        .getPublicUrl(newFileName);
+
+      const { error: dbError } = await supabase
+        .from('product_images')
+        .update({ url: publicUrl })
+        .eq('id', fullscreenImage.id);
+
       if (dbError) throw dbError;
 
-      if (oldPath) await supabase.storage.from('product-images').remove([oldPath]);
+      if (oldPath) {
+        await supabase.storage.from('product-images').remove([oldPath]);
+      }
 
       const updatedImg = { ...fullscreenImage, url: publicUrl };
       setFullscreenImage(updatedImg);
+
       setProducts(prev => prev.map(p => {
-        if (p.id === selectedProduct.id) { return { ...p, product_images: p.product_images.map(i => i.id === updatedImg.id ? updatedImg : i) }; }
+        if (p.id === selectedProduct.id) {
+          return { ...p, product_images: p.product_images.map(i => i.id === updatedImg.id ? updatedImg : i) };
+        }
         return p;
       }));
-      setSelectedProduct(prev => ({ ...prev, product_images: prev.product_images.map(i => i.id === updatedImg.id ? updatedImg : i) }));
+
+      setSelectedProduct(prev => ({
+        ...prev,
+        product_images: prev.product_images.map(i => i.id === updatedImg.id ? updatedImg : i)
+      }));
+
       setIsEditingImage(false);
-    } catch (e) { alert("Si è verificato un errore durante il salvataggio."); } finally { setIsSavingImage(false); }
+    } catch (e) {
+      console.error(e);
+      alert("Si è verificato un errore durante il salvataggio dell'immagine modificata.");
+    } finally {
+      setIsSavingImage(false);
+    }
   };
 
   const handleShareProduct = async () => {
@@ -681,6 +728,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     if (selectedItemIds.length === 0) return;
     setIsDownloading(true);
     setIsBulkActionsMenuOpen(false);
+
     const accessoryOrder = ['side', 'front', 'back', 'top', 'sole', 'detail'];
     const apparelOrder = ['front', 'back', 'inner_tag', 'detail_1', 'detail_2'];
 
@@ -692,10 +740,16 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       for (const productId of selectedItemIds) {
         const product = products.find(p => p.id === productId);
         if (!product) continue;
-        let processedImages = product.product_images?.filter(img => img.enabled !== false && img.type === 'processed') || [];
+
+        let processedImages = product.product_images?.filter(
+          img => img.enabled !== false && img.type === 'processed'
+        ) || [];
+        
         if (processedImages.length === 0) continue; 
+
         const isAccessory = ACCESSORY_CATEGORIES.includes(product.category_id);
         const targetOrder = isAccessory ? accessoryOrder : apparelOrder;
+
         processedImages.sort((a, b) => {
           let indexA = targetOrder.indexOf(a.angle);
           let indexB = targetOrder.indexOf(b.angle);
@@ -703,8 +757,10 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
           if (indexB === -1) indexB = 999;
           return indexA - indexB;
         });
+
         const seasonName = product.collections?.collection || 'SenzaStagione';
         const folder = zip.folder(seasonName);
+
         const safeModel = (product.model_code || 'MOD').replace(/[^a-zA-Z0-9_-]/g, '');
         const safeVariant = (product.variant_code || '').replace(/[^a-zA-Z0-9_-]/g, '');
         const baseFileName = `${safeModel}${safeVariant}`;
@@ -712,8 +768,10 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         for (let i = 0; i < processedImages.length; i++) {
           const img = processedImages[i];
           const fileName = i === 0 ? `${baseFileName}.jpg` : `${baseFileName}_${i}.jpg`;
+          
           const response = await fetch(img.url);
           const blob = await response.blob();
+          
           folder.file(fileName, blob);
           downloadedImageIds.push(img.id);
         }
@@ -725,14 +783,23 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         setIsDownloading(false);
         return;
       }
+
       const content = await zip.generateAsync({ type: 'blob' });
       saveAs(content, `Export_Drestige_${new Date().toISOString().split('T')[0]}.zip`);
+
       await supabase.from('products').update({ status: 'downloaded' }).in('id', downloadedProductIds);
       await supabase.from('downloads').insert({ worker_id: workerId, product_images: downloadedImageIds });
+
       setProducts(prev => prev.map(p => downloadedProductIds.includes(p.id) ? { ...p, status: 'downloaded' } : p));
       setSelectedItemIds([]);
       setIsSelectionMode(false);
-    } catch (err) { showAlert("Errore", "Si è verificato un errore durante la creazione dello ZIP.", "error"); } finally { setIsDownloading(false); }
+
+    } catch (err) {
+      console.error(err);
+      showAlert("Errore", "Si è verificato un errore durante la creazione dello ZIP.", "error");
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   const confirmDeleteAction = async () => {
@@ -774,38 +841,44 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     const currentY = e.touches[0].clientY;
     const diffX = currentX - modalTouchStartPos.x;
     const diffY = currentY - modalTouchStartPos.y;
-    if (Math.abs(diffY) > Math.abs(diffX) && Math.abs(diffY) > 15) { setIsDragging(false); setSwipeOffset(0); return; }
+
+    if (Math.abs(diffY) > Math.abs(diffX) && Math.abs(diffY) > 15) {
+      setIsDragging(false);
+      setSwipeOffset(0);
+      return;
+    }
     setSwipeOffset(diffX);
   };
 
   const onModalTouchEnd = (e) => {
-    if (!modalTouchStartPos || !selectedProduct) { setIsDragging(false); setSwipeOffset(0); return; }
+    if (!modalTouchStartPos || !selectedProduct) {
+      setIsDragging(false);
+      setSwipeOffset(0);
+      return;
+    }
+    
     setIsDragging(false);
     const currentX = e.changedTouches[0].clientX;
     const diffX = currentX - modalTouchStartPos.x;
     const threshold = 80;
-    const currentIndex = sortedDisplayedProducts.findIndex(p => p.id === selectedProduct.id);
+    const currentIndex = displayedProducts.findIndex(p => p.id === selectedProduct.id);
 
-    if (diffX < -threshold && currentIndex < sortedDisplayedProducts.length - 1) {
+    if (diffX < -threshold && currentIndex < displayedProducts.length - 1) {
       setSwipeOffset(-window.innerWidth);
       setTimeout(() => {
         setIsDragging(true); 
         setSwipeOffset(window.innerWidth); 
-        setSelectedProduct(sortedDisplayedProducts[currentIndex + 1]);
+        setSelectedProduct(displayedProducts[currentIndex + 1]);
         setTimeout(() => { setIsDragging(false); setSwipeOffset(0); }, 50);
       }, 300);
-      // Reset scroll automatico
-      setTimeout(() => { const container = document.getElementById('product-scroll-container'); if (container) container.scrollTo(0,0); }, 350);
     } else if (diffX > threshold && currentIndex > 0) {
       setSwipeOffset(window.innerWidth);
       setTimeout(() => {
         setIsDragging(true);
         setSwipeOffset(-window.innerWidth);
-        setSelectedProduct(sortedDisplayedProducts[currentIndex - 1]);
+        setSelectedProduct(displayedProducts[currentIndex - 1]);
         setTimeout(() => { setIsDragging(false); setSwipeOffset(0); }, 50);
       }, 300);
-      // Reset scroll automatico
-      setTimeout(() => { const container = document.getElementById('product-scroll-container'); if (container) container.scrollTo(0,0); }, 350);
     } else {
       setSwipeOffset(0);
     }
@@ -815,12 +888,16 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const navigateImage = (direction, e) => {
     e.stopPropagation();
     if (!selectedProduct || !fullscreenImage) return;
+    
     const processedImages = selectedProduct.product_images?.filter(img => img.type === 'processed') || [];
     const rawImages = selectedProduct.product_images?.filter(img => img.type !== 'processed') || [];
     const allImages = [...processedImages, ...rawImages];
+    
     if (allImages.length <= 1) return;
+
     const currentIndex = allImages.findIndex(img => img.id === fullscreenImage.id);
     if (currentIndex === -1) return;
+    
     if (direction === 'next') {
       const nextIndex = (currentIndex + 1) % allImages.length;
       setFullscreenImage(allImages[nextIndex]);
@@ -832,14 +909,20 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
   const handleSubmitRedo = async () => {
     setIsSubmittingRedo(true);
-    const { data, error } = await supabase.from('redo').insert({ product_id: selectedProduct.id, reason: redoReason }).select().single();
+    const { data, error } = await supabase.from('redo').insert({
+      product_id: selectedProduct.id,
+      reason: redoReason
+    }).select().single();
+
     if (!error && data) {
       const updatedProduct = { ...selectedProduct, redo: [...(selectedProduct.redo || []), data] };
       setSelectedProduct(updatedProduct);
       setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
       setRedoPromptOpen(false);
       setRedoReason('');
-    } else { alert("Errore nell'invio della richiesta."); }
+    } else {
+      alert("Errore nell'invio della richiesta.");
+    }
     setIsSubmittingRedo(false);
   };
 
@@ -848,16 +931,40 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     try {
       const allImages = selectedProduct.product_images || [];
       if (allImages.length > 0) {
-        const paths = allImages.map(img => { try { return img.url.split('/product-images/')[1]; } catch(e) { return null; } }).filter(Boolean);
-        if (paths.length > 0) await supabase.storage.from('product-images').remove(paths);
+        const paths = allImages.map(img => {
+          try { return img.url.split('/product-images/')[1]; } catch(e) { return null; }
+        }).filter(Boolean);
+        
+        if (paths.length > 0) {
+          await supabase.storage.from('product-images').remove(paths);
+        }
       }
+
       await supabase.from('products').delete().eq('id', selectedProduct.id);
       const productReference = selectedProduct.ean || selectedProduct.model_code;
       setProducts(prev => prev.filter(p => p.id !== selectedProduct.id));
-      if (window.history.state?.modal === 'product') { window.history.back(); } else { setSelectedProduct(null); }
-      if (onRedoProduct) { setTimeout(() => { onRedoProduct(productReference); }, 300); }
-    } catch (e) { alert("Errore durante l'eliminazione del prodotto."); } finally { setIsProcessingRedo(false); }
+      
+      if (window.history.state?.modal === 'product') {
+        window.history.back();
+      } else {
+        setSelectedProduct(null);
+      }
+
+      if (onRedoProduct) {
+        setTimeout(() => {
+          onRedoProduct(productReference);
+        }, 300);
+      }
+
+    } catch (e) {
+      console.error(e);
+      alert("Errore durante l'eliminazione del prodotto.");
+    } finally {
+      setIsProcessingRedo(false);
+    }
   };
+
+  const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE);
 
   if (loading) return <SkeletonGrid />;
 
@@ -940,12 +1047,12 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
           
           <div className="mb-4 px-1 flex items-center justify-between animate-in fade-in">
              <p className="text-sm font-semibold text-zinc-500">
-               {sortedDisplayedProducts.length} {sortedDisplayedProducts.length === 1 ? 'prodotto' : 'prodotti'} {activeFilter === 'downloaded' ? 'in archivio' : 'trovati'}
-               {totalPages > 1 && ` (Pagina ${safeCurrentPage} di ${totalPages})`}
+               Visualizzati {sortedDisplayedProducts.length} su {totalItems} {totalItems === 1 ? 'prodotto totale' : 'prodotti totali'} {activeFilter === 'downloaded' ? 'in archivio' : 'trovati'}
+               {totalPages > 1 && ` • Pagina ${currentPage}/${totalPages}`}
              </p>
           </div>
 
-          {paginatedProducts.length === 0 ? (
+          {sortedDisplayedProducts.length === 0 ? (
             <div className="flex flex-col items-center justify-center text-center py-20 opacity-70">
               <div className="w-20 h-20 bg-zinc-100 rounded-full flex items-center justify-center mb-4"><PackageOpen size={36} className="text-zinc-400" strokeWidth={1.5} /></div>
               <p className="font-semibold text-zinc-900 text-lg">Nessun prodotto trovato</p>
@@ -953,11 +1060,12 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
           ) : (
             <>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                {paginatedProducts.map(product => {
+                {sortedDisplayedProducts.map(product => {
                   const processedImages = product.product_images?.filter(img => img.type === 'processed') || [];
                   const rawImages = product.product_images?.filter(img => img.type === 'raw_item') || [];
                   const coverImage = processedImages.length > 0 ? processedImages[0].url : (rawImages.length > 0 ? rawImages[0].url : null);
                   const isSelected = selectedItemIds.includes(product.id);
+                  
                   const hasActiveRedo = product.redo?.some(r => !r.done);
                   
                   return (
@@ -988,32 +1096,27 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                 })}
               </div>
 
+              {/* PAGINAZIONE CONTROLS */}
               {totalPages > 1 && (
-                <div className="flex justify-center items-center gap-3 mt-10 mb-6">
+                <div className="flex justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-zinc-100 mt-6 mb-8">
                   <button 
-                    onClick={() => {
-                      setCurrentPage(p => Math.max(1, p - 1));
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    disabled={safeCurrentPage === 1}
-                    className="w-12 h-12 flex items-center justify-center bg-white rounded-2xl shadow-sm border border-zinc-200 disabled:opacity-50 hover:bg-zinc-50 active:scale-95 transition-all text-zinc-700"
+                    onClick={() => setCurrentPage(p => Math.max(p - 1, 1))} 
+                    disabled={currentPage === 1}
+                    className="flex items-center gap-1 md:gap-2 px-3 md:px-4 py-2 bg-zinc-50 rounded-xl text-sm font-semibold text-zinc-700 hover:bg-zinc-100 active:scale-95 disabled:opacity-50 disabled:pointer-events-none transition-all"
                   >
-                    <ChevronLeft size={24} />
+                    <ChevronLeft size={18} /> Precedente
                   </button>
                   
-                  <span className="text-sm font-bold text-zinc-700 bg-white px-6 py-3 rounded-2xl shadow-sm border border-zinc-200">
-                    Pagina {safeCurrentPage} di {totalPages}
+                  <span className="text-sm font-bold text-zinc-500">
+                    Pagina <span className="text-zinc-900 text-lg">{currentPage}</span> di {totalPages}
                   </span>
-
+                  
                   <button 
-                    onClick={() => {
-                      setCurrentPage(p => Math.min(totalPages, p + 1));
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    disabled={safeCurrentPage === totalPages}
-                    className="w-12 h-12 flex items-center justify-center bg-white rounded-2xl shadow-sm border border-zinc-200 disabled:opacity-50 hover:bg-zinc-50 active:scale-95 transition-all text-zinc-700"
+                    onClick={() => setCurrentPage(p => Math.min(p + 1, totalPages))} 
+                    disabled={currentPage === totalPages}
+                    className="flex items-center gap-1 md:gap-2 px-3 md:px-4 py-2 bg-zinc-50 rounded-xl text-sm font-semibold text-zinc-700 hover:bg-zinc-100 active:scale-95 disabled:opacity-50 disabled:pointer-events-none transition-all"
                   >
-                    <ChevronRight size={24} />
+                    Successiva <ChevronRight size={18} />
                   </button>
                 </div>
               )}
@@ -1074,7 +1177,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       {selectedProduct && !editingProduct && (() => {
         const activeRedoRecord = selectedProduct.redo?.find(r => !r.done);
         
-        // Calcola se ci sono prodotti precedenti o successivi
+        // AGGIUNGI QUESTE TRE RIGHE
         const currentIndex = sortedDisplayedProducts.findIndex(p => p.id === selectedProduct.id);
         const hasPrev = currentIndex > 0;
         const hasNext = currentIndex < sortedDisplayedProducts.length - 1;
@@ -1082,7 +1185,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         return (
           <div className="fixed inset-0 z-40 bg-zinc-900/30 backdrop-blur-sm animate-in fade-in duration-200 overflow-hidden">
             
-            {/* --- FRECCE NAVIGAZIONE DESKTOP --- */}
+            {/* AGGIUNGI QUESTI DUE PULSANTI PER LE FRECCE DESKTOP */}
             {hasPrev && (
               <button 
                 onClick={(e) => handleNavigateProduct('prev', e)}
@@ -1099,15 +1202,15 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                 <ChevronRight size={32} strokeWidth={2.5} />
               </button>
             )}
-
+            
             <div 
-              className={`w-full h-full md:max-w-[85vw] md:mx-auto md:rounded-t-3xl md:mt-10 bg-zinc-50 flex flex-col shadow-2xl ${isDragging ? '' : 'transition-transform duration-300 ease-out'}`}
+              className={`w-full h-full bg-zinc-50 flex flex-col shadow-2xl ${isDragging ? '' : 'transition-transform duration-300 ease-out'}`}
               style={{ transform: `translateX(${swipeOffset}px)` }}
               onTouchStart={onModalTouchStart}
               onTouchMove={onModalTouchMove}
               onTouchEnd={onModalTouchEnd}
             >
-                <header className="px-6 py-4 border-b border-zinc-200/50 flex justify-between items-start bg-white/80 backdrop-blur-md sticky top-0 z-10 shadow-sm md:rounded-t-3xl">
+                <header className="px-6 py-4 border-b border-zinc-200/50 flex justify-between items-start bg-white/80 backdrop-blur-md sticky top-0 z-10 shadow-sm">
                     <div className="pr-2">
                         <h2 className="text-2xl font-black text-zinc-900 leading-tight">{selectedProduct.model_code}</h2>
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mt-2">
@@ -1134,8 +1237,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                     </div>
                 </header>
                 
-                {/* Aggiunto id="product-scroll-container" per il reset automatico dello scroll */}
-                <div id="product-scroll-container" className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8 max-w-3xl mx-auto w-full pb-32">
+                <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-8 max-w-3xl mx-auto w-full pb-32">
                     
                     {activeRedoRecord && (
                       <div className="bg-orange-50 border border-orange-200 rounded-2xl p-5 shadow-sm">
@@ -1252,6 +1354,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       {fullscreenImage && (
         <div className="fixed inset-0 z-[80] bg-zinc-950/95 flex items-center justify-center backdrop-blur-md animate-in fade-in duration-200">
           
+          {/* VISTA EDITOR FOTO */}
           {isEditingImage ? (
             <div className="absolute inset-0 z-[100] bg-zinc-950 flex flex-col">
               <div className="flex-1 relative bg-zinc-900/50">
@@ -1291,6 +1394,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
               </div>
             </div>
           ) : (
+            /* VISTA NORMALE FULLSCREEN */
             <>
               <button onClick={closeFullscreenImage} className="absolute top-6 right-6 w-12 h-12 bg-white/10 rounded-full flex items-center justify-center text-white hover:bg-white/20 active:scale-90 transition-all z-[90] backdrop-blur-lg"><X size={24} strokeWidth={2.5} /></button>
               
@@ -1336,7 +1440,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
         </div>
       )}
-
+      {/* --- CUSTOM ALERT OVERLAY --- */}
       {customAlert.visible && (
         <div className="fixed inset-0 z-[120] bg-zinc-950/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl relative animate-in zoom-in-95 duration-200 text-center flex flex-col items-center">
