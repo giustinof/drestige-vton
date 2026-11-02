@@ -129,6 +129,26 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const showAlert = (title, message, type = 'info') => setCustomAlert({ visible: true, title, message, type });
   const closeAlert = () => setCustomAlert({ ...customAlert, visible: false });
 
+   // Filtri secondari mantenuti lato client sul set restituito di 500 elementi
+  const displayedProducts = products.filter(p => {
+    // Escludiamo downloaded e ricerchiamo tramite server-side.
+    if (activeFilter === 'downloaded') return p.status === 'downloaded';
+    if (p.status === 'downloaded') return false;
+
+    const processed = p.product_images?.filter(img => img.type === 'processed').length || 0;
+    const raws = p.product_images?.filter(img => img.type !== 'processed').length || 0;
+    if (activeFilter === 'processing' && (p.status !== 'processing' || processed > 0)) return false;
+    if (activeFilter === 'done' && processed === 0) return false;
+    if (activeFilter === 'no-photo' && (processed > 0 || raws < 0)) return false;
+    return true;
+  });
+
+  const sortedDisplayedProducts = [...displayedProducts].sort((a, b) => {
+    const aNeedsRedo = a.redo?.some(r => !r.done) ? 1 : 0;
+    const bNeedsRedo = b.redo?.some(r => !r.done) ? 1 : 0;
+    return bNeedsRedo - aNeedsRedo; 
+  });
+  
   // Effetto per reset pagina se cambiano ricerca o filtri base
   useEffect(() => {
     setCurrentPage(1);
@@ -457,26 +477,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     if (contextMenu.visible) document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
   }, [contextMenu.visible]);
-
-  // Filtri secondari mantenuti lato client sul set restituito di 500 elementi
-  const displayedProducts = products.filter(p => {
-    // Escludiamo downloaded e ricerchiamo tramite server-side.
-    if (activeFilter === 'downloaded') return p.status === 'downloaded';
-    if (p.status === 'downloaded') return false;
-
-    const processed = p.product_images?.filter(img => img.type === 'processed').length || 0;
-    const raws = p.product_images?.filter(img => img.type !== 'processed').length || 0;
-    if (activeFilter === 'processing' && (p.status !== 'processing' || processed > 0)) return false;
-    if (activeFilter === 'done' && processed === 0) return false;
-    if (activeFilter === 'no-photo' && (processed > 0 || raws < 0)) return false;
-    return true;
-  });
-
-  const sortedDisplayedProducts = [...displayedProducts].sort((a, b) => {
-    const aNeedsRedo = a.redo?.some(r => !r.done) ? 1 : 0;
-    const bNeedsRedo = b.redo?.some(r => !r.done) ? 1 : 0;
-    return bNeedsRedo - aNeedsRedo; 
-  });
 
   const handleSelectAll = () => {
     if (selectedItemIds.length === sortedDisplayedProducts.length && sortedDisplayedProducts.length > 0) {
