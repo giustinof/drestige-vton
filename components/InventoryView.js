@@ -1,7 +1,7 @@
 "use client"
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, MoreVertical, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop, RotateCcw, AlertCircle, MessageSquare, Wand2, CheckCircle2, Info, Eraser, Undo2, Images, ArrowLeftRight } from 'lucide-react';
+import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, MoreVertical, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop, RotateCcw, AlertCircle, MessageSquare, Wand2, CheckCircle2, Info, Eraser, Undo2, Images, ArrowLeftRight, Bookmark } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import PullToRefresh from 'react-simple-pull-to-refresh';
 import Cropper from 'react-easy-crop';
@@ -65,7 +65,6 @@ const ACCESSORY_CATEGORIES = [
 ];
 
 export default function InventoryView({ viewMode, workerId, refreshKey, searchQuery, activeFilter, scannedEan, setScannedEan, onRedoProduct, onSelectionModeChange }) {
-  // --- STATI PAGINAZIONE ---
   const ITEMS_PER_PAGE = 500;
   const [currentPage, setCurrentPage] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -129,9 +128,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const showAlert = (title, message, type = 'info') => setCustomAlert({ visible: true, title, message, type });
   const closeAlert = () => setCustomAlert({ ...customAlert, visible: false });
 
-   // Filtri secondari mantenuti lato client sul set restituito di 500 elementi
   const displayedProducts = products.filter(p => {
-    // Escludiamo downloaded e ricerchiamo tramite server-side.
     if (activeFilter === 'downloaded') return p.status === 'downloaded';
     if (p.status === 'downloaded') return false;
 
@@ -149,12 +146,10 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     return bNeedsRedo - aNeedsRedo; 
   });
   
-  // Effetto per reset pagina se cambiano ricerca o filtri base
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, viewMode]); // Non resettiamo su activeFilter per evitare reset continui sui sub-filtri lato client
+  }, [searchQuery, viewMode]);
 
-  // Effetto per salvare la pagina su localStorage
   useEffect(() => {
     if (typeof window !== 'undefined') {
       localStorage.setItem('inventoryCurrentPage', currentPage.toString());
@@ -178,11 +173,10 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       .from('products')
       .select(`*, product_images(id, url, type, enabled, angle), collections(*), redo(*)`, { count: 'exact' })
       .order('created_at', { ascending: false })
-      .range(from, to); // Paginazione Server-Side!
+      .range(from, to);
 
     if (viewMode === 'my-products') query = query.eq('worker_id', workerId);
 
-    // Filtri Server-Side (Ricerca globale ed esclusione scaricati)
     if (searchQuery) {
        query = query.or(`model_code.ilike.%${searchQuery}%,ean.ilike.%${searchQuery}%`);
     }
@@ -224,14 +218,12 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       setSelectedProduct(sortedDisplayedProducts[currentIndex - 1]);
     }
 
-    // Reset scroll della scheda appena cambia
     setTimeout(() => {
       const container = document.getElementById('product-scroll-container');
       if (container) container.scrollTo(0, 0);
     }, 0);
   };
 
-  // SHORTCUT DA TASTIERA
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (!selectedProduct || fullscreenImage || isEditingImage || editingProduct || deleteModal || contextMenu.visible || redoPromptOpen) return;
@@ -243,6 +235,38 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedProduct, fullscreenImage, isEditingImage, editingProduct, deleteModal, contextMenu.visible, redoPromptOpen, sortedDisplayedProducts]);
+
+  // --- LOGICA SEGNALIBRO ---
+  const handleToggleBookmark = async (productToToggle) => {
+    const isCurrentlyBookmarked = productToToggle.is_bookmarked;
+    
+    // Optimistic Update: Rimuoviamo il segnalibro da tutti gli altri e lo impostiamo per questo
+    setProducts(prev => prev.map(p => ({
+      ...p,
+      is_bookmarked: p.id === productToToggle.id ? !isCurrentlyBookmarked : false
+    })));
+
+    if (selectedProduct && selectedProduct.id === productToToggle.id) {
+      setSelectedProduct(prev => ({ ...prev, is_bookmarked: !isCurrentlyBookmarked }));
+    } else if (selectedProduct) {
+      setSelectedProduct(prev => ({ ...prev, is_bookmarked: false }));
+    }
+
+    try {
+      if (!isCurrentlyBookmarked) {
+        // Rimuoviamo prima dal db eventuali altri segnalibri per non violare l'indice SQL
+        await supabase.from('products').update({ is_bookmarked: false }).eq('is_bookmarked', true);
+        // Aggiungiamo a questo
+        await supabase.from('products').update({ is_bookmarked: true }).eq('id', productToToggle.id);
+      } else {
+        // Se lo stiamo solo rimuovendo
+        await supabase.from('products').update({ is_bookmarked: false }).eq('id', productToToggle.id);
+      }
+    } catch (err) {
+      console.error("Errore aggiornamento segnalibro:", err);
+      showAlert("Errore", "Impossibile aggiornare il segnalibro", "error");
+    }
+  };
 
   const handleSwapRawProcessed = async () => {
     if (!fullscreenImage || !selectedProduct) return;
@@ -1065,16 +1089,23 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                   const rawImages = product.product_images?.filter(img => img.type === 'raw_item') || [];
                   const coverImage = processedImages.length > 0 ? processedImages[0].url : (rawImages.length > 0 ? rawImages[0].url : null);
                   const isSelected = selectedItemIds.includes(product.id);
-                  
+                  const isBookmarked = product.is_bookmarked;
                   const hasActiveRedo = product.redo?.some(r => !r.done);
                   
                   return (
                     <div key={product.id} className={`bg-white rounded-[1.25rem] p-2 shadow-sm border cursor-pointer active:scale-[0.98] transition-all select-none relative 
-                      ${isSelected ? 'border-indigo-500 ring-2 ring-indigo-500 ring-offset-2' : hasActiveRedo ? 'border-orange-500 ring-2 ring-orange-500/50' : 'border-zinc-100 hover:border-zinc-200'}`}
+                      ${isSelected ? 'border-indigo-500 ring-2 ring-indigo-500 ring-offset-2' : isBookmarked ? 'border-green-500 ring-2 ring-green-500/50' : hasActiveRedo ? 'border-orange-500 ring-2 ring-orange-500/50' : 'border-zinc-100 hover:border-zinc-200'}`}
                       onClick={() => handleProductClick(product)} onContextMenu={(e) => handleRightClick(e, product)} onTouchStart={(e) => handleTouchStart(e, product)} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove} onTouchCancel={handleTouchEnd}>
                       
                       {isSelected && (<div className="absolute top-4 right-4 bg-indigo-600 text-white rounded-full p-1 z-1 shadow-md animate-in zoom-in-75"><Check size={16} strokeWidth={3} /></div>)}
                       
+                      {/* Badge Segnalibro */}
+                      {isBookmarked && !isSelected && (
+                        <div className="absolute top-3 right-3 bg-green-500 text-white p-1.5 rounded-full z-10 shadow-sm animate-in zoom-in">
+                          <Bookmark size={14} strokeWidth={3} fill="currentColor" />
+                        </div>
+                      )}
+
                       {hasActiveRedo && !isSelected && (
                         <div className="absolute top-3 left-3 bg-orange-500 text-white text-[10px] tracking-wider font-black px-2 py-1 rounded-md z-10 shadow-sm flex items-center gap-1">
                           <RotateCcw size={10} strokeWidth={3} /> DA RIFARE
@@ -1129,8 +1160,16 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       {contextMenu.visible && (
         <div className="fixed z-50 bg-white/90 backdrop-blur-md rounded-2xl shadow-2xl border border-zinc-100 p-1.5 flex flex-col min-w-[160px] animate-in fade-in zoom-in-95 duration-150" style={{ top: contextMenu.y, left: contextMenu.x }} onClick={(e) => e.stopPropagation()}>
           <button className="flex items-center gap-3 px-3 py-2.5 text-sm font-semibold text-indigo-600 hover:bg-indigo-50 rounded-xl transition-colors text-left" onClick={() => { setIsSelectionMode(true); setSelectedItemIds([contextMenu.product.id]); setContextMenu({ visible: false, x: 0, y: 0, product: null }); }}><CheckSquare size={16} /> Seleziona</button>
+          
+          <div className="h-px bg-zinc-200/50 my-1 mx-2"></div>
+          <button className="flex items-center gap-3 px-3 py-2.5 text-sm font-semibold text-green-600 hover:bg-green-50 rounded-xl transition-colors text-left" onClick={() => { handleToggleBookmark(contextMenu.product); setContextMenu({ visible: false, x: 0, y: 0, product: null }); }}>
+            <Bookmark size={16} fill={contextMenu.product.is_bookmarked ? "currentColor" : "none"} /> 
+            {contextMenu.product.is_bookmarked ? 'Rimuovi Segnalibro' : 'Aggiungi Segnalibro'}
+          </button>
+
           <div className="h-px bg-zinc-200/50 my-1 mx-2"></div>
           <button className="flex items-center gap-3 px-3 py-2.5 text-sm font-semibold text-zinc-800 hover:bg-zinc-100 rounded-xl transition-colors text-left" onClick={() => { openEditModal(contextMenu.product); setContextMenu({ visible: false, x: 0, y: 0, product: null }); }}><Edit size={16} /> Modifica</button>
+          
           <div className="h-px bg-zinc-200/50 my-1 mx-2"></div>
           <button className="flex items-center gap-3 px-3 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50 rounded-xl transition-colors text-left" onClick={() => { openDeleteModal('single', contextMenu.product); setContextMenu({ visible: false, x: 0, y: 0, product: null }); }}><Trash2 size={16} /> Elimina</button>
         </div>
@@ -1177,7 +1216,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       {selectedProduct && !editingProduct && (() => {
         const activeRedoRecord = selectedProduct.redo?.find(r => !r.done);
         
-        // AGGIUNGI QUESTE TRE RIGHE
         const currentIndex = sortedDisplayedProducts.findIndex(p => p.id === selectedProduct.id);
         const hasPrev = currentIndex > 0;
         const hasNext = currentIndex < sortedDisplayedProducts.length - 1;
@@ -1185,7 +1223,6 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         return (
           <div className="fixed inset-0 z-40 bg-zinc-900/30 backdrop-blur-sm animate-in fade-in duration-200 overflow-hidden">
             
-            {/* AGGIUNGI QUESTI DUE PULSANTI PER LE FRECCE DESKTOP */}
             {hasPrev && (
               <button 
                 onClick={(e) => handleNavigateProduct('prev', e)}
@@ -1221,6 +1258,14 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                         </div>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
+                      <button 
+                        onClick={() => handleToggleBookmark(selectedProduct)}
+                        className={`w-10 h-10 rounded-full flex items-center justify-center transition-transform mt-1 ${selectedProduct.is_bookmarked ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200'} active:scale-90`}
+                        title="Segnalibro"
+                      >
+                        <Bookmark size={18} strokeWidth={2.5} fill={selectedProduct.is_bookmarked ? "currentColor" : "none"} />
+                      </button>
+
                       <button 
                         onClick={() => openEditModal(selectedProduct)}
                         className="w-10 h-10 bg-zinc-100 rounded-full flex items-center justify-center text-zinc-700 hover:bg-zinc-200 active:scale-90 transition-transform mt-1"
