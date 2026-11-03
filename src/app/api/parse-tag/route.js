@@ -20,18 +20,20 @@ export async function POST(req) {
     const base64Image = buffer.toString('base64');
     const dataUrl = `data:${image.type};base64,${base64Image}`;
 
-    // PROMPT AGGIORNATO E OTTIMIZZATO PER I TUOI CARTELLINI
+    // PROMPT AGGIORNATO CON L'ESTRAZIONE DEL TESTO GREZZO (RAW TEXT)
     const prompt = `
       Analizza questo cartellino di abbigliamento ed estrai i seguenti dati:
-      1. model_code: Il codice alfanumerico del modello principale. Nelle etichette standard si trova al centro, all'inizio della riga descrittiva (es. estrai "E4700VELOUR" da "E4700VELOUR SAB 39" oppure "E4723TALCP" da "E4723TALCP NER 36").
-      2. variant_code: Il codice della variante (solitamente il colore). È la parola o le 3 lettere situate subito dopo il codice modello e prima della taglia (es. estrai "SAB" per Sabbia, o "NER" per Nero e oro). ATTENZIONE: IGNORA I NUMERI alla fine della riga (es. 36, 39, ecc. sono la taglia, NON sono la variante).
-      3. ean: Il codice a barre numerico a 13 cifre (rimuovi gli spazi). Cerca quello in basso a destra (es. 8000000...).
+      1. model_code: Il codice alfanumerico del modello principale. Nelle etichette standard si trova al centro, all'inizio della riga descrittiva.
+      2. variant_code: Il codice della variante (solitamente il colore). È la parola o le 3 lettere situate subito dopo il codice modello e prima della taglia. ATTENZIONE: IGNORA I NUMERI alla fine della riga.
+      3. ean: Il codice a barre numerico a 13 cifre (rimuovi gli spazi).
+      4. raw_text: Trascrivi TUTTO il testo che riesci a leggere sull'etichetta. Separa le righe con un "\n". Questa sarà la nostra rete di salvataggio.
       
       Restituisci SOLO un oggetto JSON valido in questo formato esatto, senza markdown o testo aggiuntivo:
       {
         "model_code": "valore",
         "variant_code": "valore",
-        "ean": "valore"
+        "ean": "valore",
+        "raw_text": "tutto il testo letto..."
       }
     `;
 

@@ -11,7 +11,8 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     model_code: '',
     variant_code: '',
     ean: '',
-    category_id: ''
+    category_id: '',
+    raw_text: '' // <-- AGGIUNTO QUI
   });
   
   const [seasons, setSeasons] = useState([]);
@@ -64,7 +65,15 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
         const response = await fetch('/api/parse-tag', { method: 'POST', body: payload });
         if (!response.ok) throw new Error('Errore OCR');
         const data = await response.json();
-        setFormData(prev => ({ ...prev, model_code: data.model_code || '', variant_code: data.variant_code || '', ean: data.ean || '' }));
+        
+        // SALVA ANCHE IL RAW TEXT NELLO STATO
+        setFormData(prev => ({ 
+          ...prev, 
+          model_code: data.model_code || '', 
+          variant_code: data.variant_code || '', 
+          ean: data.ean || '',
+          raw_text: data.raw_text || '' // <-- SALVATO QUI
+        }));
       } catch (error) {
         console.error("Errore OCR:", error);
       } finally {
@@ -87,7 +96,6 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
         fileType: 'image/jpeg'
       };
 
-      // Comprimi il file
       const compressedFile = await imageCompression(file, options);
 
       setProductImages(prev => {
@@ -127,6 +135,7 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
           model_code: formData.model_code,
           variant_code: formData.variant_code,
           ean: formData.ean,
+          raw_text: formData.raw_text, // <-- INVIATO AL DB
           status: 'processing',
         }]).select().single();
 
