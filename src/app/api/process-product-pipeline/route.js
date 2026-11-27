@@ -7,6 +7,7 @@ import {
   normalizeMadeIn,
 } from '../../../../lib/composition';
 import { extractCompositionFromImageUrls } from '../../../../lib/deepseekComposition';
+import { lookupModelCompositionDefaults } from '../../../../lib/modelCompositionLookup';
 
 if (process.env.NODE_ENV === 'development') {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -60,25 +61,39 @@ export async function POST(req) {
         let finalMadeIn = normalizeMadeIn(initialMadeIn);
 
         // Se ci sono foto del cartellino composizione ma i dati non sono ancora stati letti, li estrae DeepSeek
-        if (compositionImages.length > 0 && !finalComposition && !finalMadeIn) {
+        if (compositionImages.length > 0 && (!finalComposition || !finalMadeIn)) {
           try {
             console.log(`[Pipeline Composizione] Lettura DeepSeek su ${compositionImages.length} foto...`);
             const extracted = await extractCompositionFromImageUrls(
               compositionImages.map(i => i.url)
             );
-            finalComposition = extracted.composition || '';
-            finalMadeIn = extracted.made_in || '';
-
-            if (finalComposition || finalMadeIn) {
-              await supabase.from('products').update({
-                composition: finalComposition || null,
-                made_in: finalMadeIn || null,
-              }).eq('id', productId);
-            }
+            finalComposition = finalComposition || extracted.composition || '';
+            finalMadeIn = finalMadeIn || extracted.made_in || '';
             console.log('[Pipeline Composizione] ✅ Estratto:', { finalComposition, finalMadeIn });
           } catch (compErr) {
             console.error('[Pipeline Composizione] ❌ Errore DeepSeek:', compErr);
           }
+        }
+
+        // Fallback lato server: eredita composizione / Made in da una variante precedente dello stesso modello
+        if ((!finalComposition || !finalMadeIn) && modelCode) {
+          try {
+            const defaults = await lookupModelCompositionDefaults(supabase, modelCode, productId);
+            if (defaults) {
+              finalComposition = finalComposition || defaults.composition || '';
+              finalMadeIn = finalMadeIn || defaults.made_in || '';
+              console.log('[Pipeline Composizione] ✅ Ereditato da stesso modello:', { modelCode, finalComposition, finalMadeIn });
+            }
+          } catch (lookupErr) {
+            console.error('[Pipeline Composizione] ❌ Errore lookup modello:', lookupErr);
+          }
+        }
+
+        if (finalComposition || finalMadeIn) {
+          await supabase.from('products').update({
+            composition: finalComposition || null,
+            made_in: finalMadeIn || null,
+          }).eq('id', productId);
         }
 
         console.log("[Pipeline SEO] Avvio AI...");

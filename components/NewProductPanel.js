@@ -1,7 +1,9 @@
 "use client"
-import { useState, useEffect } from 'react';
-import { Camera, X, Loader2, Check, Info, Plus, RefreshCw, Tag } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Camera, X, Loader2, Check, Info, Plus, RefreshCw, Tag, Sparkles } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { lookupModelCompositionDefaults } from '../lib/modelCompositionLookup';
+import { normalizeComposition, normalizeMadeIn } from '../lib/composition';
 import imageCompression from 'browser-image-compression';
 
 export default function NewProductPanel({ onClose, workerId, categories, initialTagFile }) {
@@ -24,6 +26,8 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
   const [isOcrProcessing, setIsOcrProcessing] = useState(true);
   const [isCompositionProcessing, setIsCompositionProcessing] = useState(false);
   const [compositionError, setCompositionError] = useState('');
+  const [autofilledFrom, setAutofilledFrom] = useState(null);
+  const userTouchedCompositionRef = useRef({ composition: false, made_in: false });
   const [isSaving, setIsSaving] = useState(false);
 
   const isAccessory = categories.find(c => c.id === formData.category_id)?.gender?.toLowerCase() === 'unisex';
@@ -88,6 +92,63 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     processTag();
   }, [initialTagFile]);
 
+  // 1b. Precompilazione automatica composizione / made-in da varianti precedenti dello stesso modello
+  useEffect(() => {
+    const cleanModel = formData.model_code.trim();
+
+    if (!cleanModel) {
+      setAutofilledFrom(null);
+      setFormData(prev => ({
+        ...prev,
+        composition: userTouchedCompositionRef.current.composition ? prev.composition : '',
+        made_in: userTouchedCompositionRef.current.made_in ? prev.made_in : '',
+      }));
+      return;
+    }
+
+    if (
+      userTouchedCompositionRef.current.composition &&
+      userTouchedCompositionRef.current.made_in
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const defaults = await lookupModelCompositionDefaults(supabase, cleanModel);
+      if (cancelled) return;
+
+      if (defaults && (defaults.composition || defaults.made_in)) {
+        const canFillComp = !userTouchedCompositionRef.current.composition && Boolean(defaults.composition);
+        const canFillMadeIn = !userTouchedCompositionRef.current.made_in && Boolean(defaults.made_in);
+
+        setFormData(prev => ({
+          ...prev,
+          composition: userTouchedCompositionRef.current.composition ? prev.composition : (defaults.composition || ''),
+          made_in: userTouchedCompositionRef.current.made_in ? prev.made_in : (defaults.made_in || ''),
+        }));
+
+        setAutofilledFrom(
+          (canFillComp || canFillMadeIn)
+            ? { modelCode: cleanModel, sourceVariant: defaults.source_variant_code }
+            : null
+        );
+      } else {
+        setAutofilledFrom(null);
+        setFormData(prev => ({
+          ...prev,
+          composition: userTouchedCompositionRef.current.composition ? prev.composition : '',
+          made_in: userTouchedCompositionRef.current.made_in ? prev.made_in : '',
+        }));
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [formData.model_code]);
+
   // 2. Acquisizione guidata (con compressione salva-iOS)
   const handleProductCapture = async (e, angle) => {
     const file = e.target.files[0];
@@ -135,6 +196,10 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
 
       if (!response.ok) throw new Error('Errore lettura composizione');
       const data = await response.json();
+
+      if (data.composition) userTouchedCompositionRef.current.composition = true;
+      if (data.made_in) userTouchedCompositionRef.current.made_in = true;
+      if (data.composition || data.made_in) setAutofilledFrom(null);
 
       setFormData(prev => ({
         ...prev,
@@ -204,6 +269,9 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
 
     setIsSaving(true);
     try {
+      const cleanComposition = normalizeComposition(formData.composition);
+      const cleanMadeIn = normalizeMadeIn(formData.made_in);
+
       const { data: newProduct, error: productError } = await supabase
         .from('products')
         .insert([{
@@ -214,8 +282,8 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
           variant_code: formData.variant_code,
           ean: formData.ean,
           raw_text: formData.raw_text,
-          composition: formData.composition.trim() || null,
-          made_in: formData.made_in.trim() || null,
+          composition: cleanComposition || null,
+          made_in: cleanMadeIn || null,
           status: 'processing',
         }]).select().single();
 
@@ -253,8 +321,8 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
           categoryName,
           modelCode: formData.model_code,
           variantCode: formData.variant_code,
-          composition: formData.composition.trim(),
-          madeIn: formData.made_in.trim(),
+          composition: cleanComposition,
+          madeIn: cleanMadeIn,
           uploadedImages 
         }),
         keepalive: true 
@@ -373,6 +441,16 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
               Scatta una o più foto del cartellino interno (composizione e provenienza). DeepSeek leggerà i dati e li aggiungerà sotto il modello nella descrizione.
             </p>
 
+            {autofilledFrom && (
+              <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 text-emerald-800 px-3 py-2 rounded-xl text-xs font-semibold">
+                <Sparkles size={14} className="shrink-0 text-emerald-600" />
+                <span>
+                  Precompilato automaticamente dal modello <span className="font-mono font-bold">{autofilledFrom.modelCode}</span>
+                  {autofilledFrom.sourceVariant ? ` (var. ${autofilledFrom.sourceVariant})` : ''}. Non serve rifare la foto, ma puoi modificarli o aggiungerne una nuova.
+                </span>
+              </div>
+            )}
+
             <div className="flex overflow-x-auto gap-3 pb-1 hide-scrollbar">
               {compositionImages.map((img, idx) => (
                 <div key={img.id} className="relative flex-shrink-0 w-24 h-24 rounded-2xl overflow-hidden border border-gray-200 bg-gray-50">
@@ -419,14 +497,22 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
               <input
                 type="text"
                 value={formData.composition}
-                onChange={e => setFormData({ ...formData, composition: e.target.value })}
+                onChange={e => {
+                  userTouchedCompositionRef.current.composition = true;
+                  if (userTouchedCompositionRef.current.made_in) setAutofilledFrom(null);
+                  setFormData({ ...formData, composition: e.target.value });
+                }}
                 className="w-full bg-gray-100 rounded-xl px-4 py-3 text-black text-sm font-medium placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black"
                 placeholder={isCompositionProcessing ? "Lettura composizione..." : "Composizione (es. 100% lana)"}
               />
               <input
                 type="text"
                 value={formData.made_in}
-                onChange={e => setFormData({ ...formData, made_in: e.target.value })}
+                onChange={e => {
+                  userTouchedCompositionRef.current.made_in = true;
+                  if (userTouchedCompositionRef.current.composition) setAutofilledFrom(null);
+                  setFormData({ ...formData, made_in: e.target.value });
+                }}
                 className="w-full bg-gray-100 rounded-xl px-4 py-3 text-black text-sm font-medium placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black"
                 placeholder={isCompositionProcessing ? "Lettura Made in..." : "Made in (es. Made in Bangladesh)"}
               />
