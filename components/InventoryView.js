@@ -1,12 +1,14 @@
 "use client"
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, MoreVertical, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop, RotateCcw, AlertCircle, MessageSquare, Wand2, CheckCircle2, Info, Eraser, Undo2, Images, ArrowLeftRight, Bookmark, TextSelect, ScanText, Copy } from 'lucide-react';
+import { PackageOpen, Sparkles, X, Edit, Trash2, CalendarDays, Loader2, Save, CheckSquare, MoreVertical, Check, Download, AlertTriangle, EyeOff, Clock, Share2, RefreshCw, CheckCheck, ChevronLeft, ChevronRight, Crop, RotateCcw, AlertCircle, MessageSquare, Wand2, CheckCircle2, Info, Eraser, Undo2, Images, ArrowLeftRight, Bookmark, TextSelect, ScanText, Copy, Camera, Plus, Tag } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import PullToRefresh from 'react-simple-pull-to-refresh';
 import Cropper from 'react-easy-crop';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import imageCompression from 'browser-image-compression';
+import { appendCompositionToDescription, normalizeComposition, normalizeMadeIn } from '../lib/composition';
 
 // --- HELPER FUNCTION PER GENERARE L'IMMAGINE RITAGLIATA / CENTRATA ---
 const createImage = (url) =>
@@ -87,7 +89,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, product: null });
   const [editingProduct, setEditingProduct] = useState(null);
-  const [editForm, setEditForm] = useState({ model_code: '', variant_code: '', ean: '', collection_id: '', title: '', description: '', raw_text: '' });
+  const [editForm, setEditForm] = useState({ model_code: '', variant_code: '', ean: '', collection_id: '', title: '', description: '', raw_text: '', composition: '', made_in: '' });
   const [isUpdating, setIsUpdating] = useState(false);
 
   const [editModalPos, setEditModalPos] = useState({ x: 0, y: 0 });
@@ -105,6 +107,9 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
   const [isDownloading, setIsDownloading] = useState(false);
   
   const [isReparsing, setIsReparsing] = useState(false);
+  const [isParsingComposition, setIsParsingComposition] = useState(false);
+  const [isUploadingComposition, setIsUploadingComposition] = useState(false);
+  const compositionInputRef = useRef(null);
   const [isBulkReparsing, setIsBulkReparsing] = useState(false);
   const [isBulkReadingText, setIsBulkReadingText] = useState(false);
 
@@ -569,7 +574,9 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       collection_id: product.collection_id || '', 
       title: product.title || '', 
       description: product.description || '',
-      raw_text: product.raw_text || ''
+      raw_text: product.raw_text || '',
+      composition: product.composition || '',
+      made_in: product.made_in || ''
     }); 
     setEditingProduct(product); 
     setEditModalPos({ x: 0, y: 0 }); 
@@ -695,6 +702,197 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
       alert('Errore di comunicazione con il server AI.');
     } finally {
       setIsReparsing(false);
+    }
+  };
+
+  const handleParseComposition = async (overrideImageUrls = null) => {
+    if (!selectedProduct) return;
+
+    const compUrls = Array.isArray(overrideImageUrls) && overrideImageUrls.length > 0
+      ? overrideImageUrls
+      : (selectedProduct.product_images?.filter(img => img.type === 'composition_tag').map(img => img.url) || []);
+
+    if (compUrls.length === 0) {
+      showAlert("Nessuna foto composizione", "Aggiungi prima una o più foto del cartellino composizione/Made in.", "info");
+      return;
+    }
+
+    setIsParsingComposition(true);
+    try {
+      const apiResponse = await fetch('/api/parse-composition', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageUrls: compUrls }),
+      });
+
+      if (!apiResponse.ok) throw new Error('Errore API DeepSeek composizione');
+      const parsed = await apiResponse.json();
+
+      const nextComposition = parsed.composition || selectedProduct.composition || '';
+      const nextMadeIn = parsed.made_in || selectedProduct.made_in || '';
+
+      if (!nextComposition && !nextMadeIn) {
+        showAlert("Nessun dato rilevato", "DeepSeek non è riuscito a leggere composizione o Made in da queste foto.", "info");
+        return;
+      }
+
+      const nextDescription = appendCompositionToDescription(
+        selectedProduct.description || '',
+        nextComposition,
+        nextMadeIn
+      );
+
+      const { error } = await supabase.from('products').update({
+        composition: nextComposition || null,
+        made_in: nextMadeIn || null,
+        description: nextDescription,
+      }).eq('id', selectedProduct.id);
+
+      if (error) throw error;
+
+      const updatedProduct = {
+        ...selectedProduct,
+        composition: nextComposition || null,
+        made_in: nextMadeIn || null,
+        description: nextDescription,
+      };
+      setSelectedProduct(updatedProduct);
+      setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
+
+      if (editingProduct && editingProduct.id === selectedProduct.id) {
+        setEditForm(prev => ({
+          ...prev,
+          composition: nextComposition,
+          made_in: nextMadeIn,
+          description: nextDescription,
+        }));
+      }
+
+      showAlert(
+        "Composizione aggiornata",
+        `${nextComposition ? `Composizione: ${nextComposition}` : 'Composizione: non rilevata'}\n${nextMadeIn || 'Made in: non rilevato'}`,
+        "success"
+      );
+    } catch (err) {
+      console.error("Errore lettura composizione:", err);
+      showAlert("Errore", "Impossibile leggere il cartellino composizione con DeepSeek.", "error");
+    } finally {
+      setIsParsingComposition(false);
+    }
+  };
+
+  const handleAddCompositionPhotos = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0 || !selectedProduct) return;
+
+    setIsUploadingComposition(true);
+    try {
+      const options = {
+        maxSizeMB: 1,
+        maxWidthOrHeight: 1920,
+        useWebWorker: true,
+        fileType: 'image/jpeg',
+      };
+
+      const existingCompImages = selectedProduct.product_images?.filter(img => img.type === 'composition_tag') || [];
+      const baseIndex = existingCompImages.length;
+
+      const uploadedRecords = [];
+      for (let i = 0; i < files.length; i++) {
+        const compressedFile = await imageCompression(files[i], options);
+        const angle = `composition_${baseIndex + i + 1}`;
+        const fileName = `${selectedProduct.id}_composition_tag_${angle}_${Date.now()}.jpg`;
+        const filePath = `${selectedProduct.id}/${fileName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from('product-images')
+          .upload(filePath, compressedFile, { contentType: 'image/jpeg' });
+        if (uploadError) throw uploadError;
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('product-images')
+          .getPublicUrl(filePath);
+
+        uploadedRecords.push({
+          product_id: selectedProduct.id,
+          url: publicUrl,
+          type: 'composition_tag',
+          angle,
+        });
+      }
+
+      const { data: insertedImages, error: insertError } = await supabase
+        .from('product_images')
+        .insert(uploadedRecords)
+        .select('id, url, type, enabled, angle');
+
+      if (insertError) throw insertError;
+
+      const updatedImages = [...(selectedProduct.product_images || []), ...(insertedImages || [])];
+      const allCompUrls = updatedImages
+        .filter(img => img.type === 'composition_tag')
+        .map(img => img.url);
+
+      let nextComposition = selectedProduct.composition || '';
+      let nextMadeIn = selectedProduct.made_in || '';
+      let nextDescription = selectedProduct.description || '';
+
+      try {
+        const apiResponse = await fetch('/api/parse-composition', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageUrls: allCompUrls }),
+        });
+
+        if (apiResponse.ok) {
+          const parsed = await apiResponse.json();
+          nextComposition = parsed.composition || nextComposition;
+          nextMadeIn = parsed.made_in || nextMadeIn;
+          if (nextComposition || nextMadeIn) {
+            nextDescription = appendCompositionToDescription(nextDescription, nextComposition, nextMadeIn);
+            await supabase.from('products').update({
+              composition: nextComposition || null,
+              made_in: nextMadeIn || null,
+              description: nextDescription,
+            }).eq('id', selectedProduct.id);
+          }
+        }
+      } catch (parseErr) {
+        console.error("Errore DeepSeek post-upload composizione:", parseErr);
+      }
+
+      const updatedProduct = {
+        ...selectedProduct,
+        product_images: updatedImages,
+        composition: nextComposition || null,
+        made_in: nextMadeIn || null,
+        description: nextDescription,
+      };
+      setSelectedProduct(updatedProduct);
+      setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
+
+      if (editingProduct && editingProduct.id === selectedProduct.id) {
+        setEditForm(prev => ({
+          ...prev,
+          composition: nextComposition,
+          made_in: nextMadeIn,
+          description: nextDescription,
+        }));
+      }
+
+      showAlert(
+        "Cartellino composizione salvato",
+        (nextComposition || nextMadeIn)
+          ? `${nextComposition ? `Composizione: ${nextComposition}` : 'Composizione: non rilevata'}\n${nextMadeIn || 'Made in: non rilevato'}`
+          : "Foto caricate. DeepSeek non ha rilevato testi leggibili: puoi riprovare o modificare a mano.",
+        "success"
+      );
+    } catch (err) {
+      console.error("Errore caricamento foto composizione:", err);
+      showAlert("Errore", "Si è verificato un errore durante il caricamento del cartellino composizione.", "error");
+    } finally {
+      setIsUploadingComposition(false);
+      e.target.value = null;
     }
   };
 
@@ -840,7 +1038,8 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
       const tagImage = product.product_images?.find(img => img.type === 'tag');
       const tagUrl = tagImage ? tagImage.url : (product.product_images?.[0]?.url || '');
-      const otherImages = product.product_images?.filter(img => img.id !== tagImage?.id).map(img => img.url) || [];
+      const compositionImageUrls = product.product_images?.filter(img => img.type === 'composition_tag').map(img => img.url) || [];
+      const otherImages = product.product_images?.filter(img => img.id !== tagImage?.id && img.type !== 'composition_tag').map(img => img.url) || [];
 
       if (!tagUrl && otherImages.length === 0) {
         failCount++;
@@ -856,7 +1055,10 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
             variantCode: product.variant_code || '',
             categoryName: categoryName,
             tagUrl: tagUrl,
-            imageUrls: otherImages
+            imageUrls: otherImages,
+            composition: product.composition || '',
+            madeIn: product.made_in || '',
+            compositionImageUrls,
           })
         });
 
@@ -864,20 +1066,23 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
         const parsedData = await apiResponse.json();
         
         if (parsedData.title && parsedData.description) {
-          const { error } = await supabase.from('products').update({
+          const updateFields = {
             title: parsedData.title,
-            description: parsedData.description
-          }).eq('id', product.id);
+            description: parsedData.description,
+          };
+          if (parsedData.composition) updateFields.composition = parsedData.composition;
+          if (parsedData.made_in) updateFields.made_in = parsedData.made_in;
+
+          const { error } = await supabase.from('products').update(updateFields).eq('id', product.id);
 
           if (!error) {
             setProducts(prev => prev.map(p => p.id === product.id ? { 
               ...p, 
-              title: parsedData.title, 
-              description: parsedData.description 
+              ...updateFields,
             } : p));
             
             if (selectedProduct && selectedProduct.id === product.id) {
-               setSelectedProduct(prev => ({...prev, title: parsedData.title, description: parsedData.description}));
+               setSelectedProduct(prev => ({...prev, ...updateFields}));
             }
             successCount++;
           } else {
@@ -1070,9 +1275,38 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
 
   const handleSaveEdit = async () => {
     setIsUpdating(true);
-    const { error } = await supabase.from('products').update({ model_code: editForm.model_code, variant_code: editForm.variant_code, ean: editForm.ean, collection_id: editForm.collection_id, title: editForm.title, description: editForm.description }).eq('id', editingProduct.id);
+    const cleanComposition = normalizeComposition(editForm.composition) || null;
+    const cleanMadeIn = normalizeMadeIn(editForm.made_in) || null;
+    const { error } = await supabase.from('products').update({
+      model_code: editForm.model_code,
+      variant_code: editForm.variant_code,
+      ean: editForm.ean,
+      collection_id: editForm.collection_id,
+      title: editForm.title,
+      description: editForm.description,
+      composition: cleanComposition,
+      made_in: cleanMadeIn,
+    }).eq('id', editingProduct.id);
     setIsUpdating(false);
-    if (!error) { setProducts(prev => prev.map(p => { if (p.id === editingProduct.id) { const updatedCollection = seasons.find(s => s.id === editForm.collection_id) || p.collections; return { ...p, ...editForm, collections: updatedCollection }; } return p; })); closeEditModal(); } else alert("Errore");
+    if (!error) {
+      const updatedFields = {
+        ...editForm,
+        composition: cleanComposition,
+        made_in: cleanMadeIn,
+      };
+      setProducts(prev => prev.map(p => {
+        if (p.id === editingProduct.id) {
+          const updatedCollection = seasons.find(s => s.id === editForm.collection_id) || p.collections;
+          return { ...p, ...updatedFields, collections: updatedCollection };
+        }
+        return p;
+      }));
+      if (selectedProduct && selectedProduct.id === editingProduct.id) {
+        const updatedCollection = seasons.find(s => s.id === editForm.collection_id) || selectedProduct.collections;
+        setSelectedProduct(prev => ({ ...prev, ...updatedFields, collections: updatedCollection }));
+      }
+      closeEditModal();
+    } else alert("Errore");
   };
 
   const onModalTouchStart = (e) => {
@@ -1466,7 +1700,41 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                   <select value={editForm.collection_id} onChange={e => setEditForm({...editForm, collection_id: e.target.value})} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-zinc-900 font-medium focus:ring-2 focus:ring-zinc-900 outline-none appearance-none"><option value="" disabled>Nessuna stagione</option>{seasons.map(s => <option key={s.id} value={s.id}>{s.collection}</option>)}</select>
                 </div>
                 <div><label className="text-xs font-bold text-zinc-500 uppercase ml-1 mb-1 block">Titolo SEO</label><input type="text" value={editForm.title} onChange={e => setEditForm({...editForm, title: e.target.value})} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-zinc-900 font-medium focus:ring-2 focus:ring-zinc-900 outline-none" /></div>
-                <div><label className="text-xs font-bold text-zinc-500 uppercase ml-1 mb-1 block">Descrizione Prodotto</label><textarea rows={3} value={editForm.description} onChange={e => setEditForm({...editForm, description: e.target.value})} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-zinc-900 font-medium focus:ring-2 focus:ring-zinc-900 outline-none resize-none" /></div>
+                <div>
+                  <label className="text-xs font-bold text-zinc-500 uppercase ml-1 mb-1 block">Composizione</label>
+                  <input
+                    type="text"
+                    placeholder="Es. 100% lana"
+                    value={editForm.composition}
+                    onChange={e => {
+                      const nextComp = e.target.value;
+                      setEditForm(prev => ({
+                        ...prev,
+                        composition: nextComp,
+                        description: appendCompositionToDescription(prev.description, nextComp, prev.made_in),
+                      }));
+                    }}
+                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-zinc-900 font-medium focus:ring-2 focus:ring-zinc-900 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-zinc-500 uppercase ml-1 mb-1 block">Made in</label>
+                  <input
+                    type="text"
+                    placeholder="Es. Made in Bangladesh"
+                    value={editForm.made_in}
+                    onChange={e => {
+                      const nextMadeIn = e.target.value;
+                      setEditForm(prev => ({
+                        ...prev,
+                        made_in: nextMadeIn,
+                        description: appendCompositionToDescription(prev.description, prev.composition, nextMadeIn),
+                      }));
+                    }}
+                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-zinc-900 font-medium focus:ring-2 focus:ring-zinc-900 outline-none"
+                  />
+                </div>
+                <div><label className="text-xs font-bold text-zinc-500 uppercase ml-1 mb-1 block">Descrizione Prodotto</label><textarea rows={5} value={editForm.description} onChange={e => setEditForm({...editForm, description: e.target.value})} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-zinc-900 font-medium focus:ring-2 focus:ring-zinc-900 outline-none resize-none" /></div>
                 
                 {/* --- SEZIONE RAW TEXT (RETE DI SALVATAGGIO OCR) --- */}
                 {editForm.raw_text && (
@@ -1577,7 +1845,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                                 >
                                     <img src={img.url} className="w-full h-full object-cover pointer-events-none" />
                                     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-zinc-900/80 via-zinc-900/30 to-transparent p-4 pt-12 pointer-events-none">
-                                        <p className="text-white text-xs tracking-wider font-bold uppercase">{img.type.replace('_', ' ')}</p>
+                                        <p className="text-white text-xs tracking-wider font-bold uppercase">{img.type === 'composition_tag' ? 'COMPOSIZIONE' : img.type.replace('_', ' ')}</p>
                                     </div>
                                 </div>
                             ))}
@@ -1606,9 +1874,57 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                               </div>
                             )}
 
-                            <section className="bg-white p-5 rounded-2xl border border-zinc-100 shadow-sm">
-                              <h3 className="font-black text-lg text-zinc-900 mb-2 leading-tight">{selectedProduct.title || "Generazione titolo in corso..."}</h3>
-                              <p className="text-sm text-zinc-600 leading-relaxed">{selectedProduct.description || "L'Intelligenza Artificiale sta scrivendo la descrizione di questo prodotto. Potrebbe volerci qualche istante."}</p>
+                            <section className="bg-white p-5 rounded-2xl border border-zinc-100 shadow-sm space-y-3">
+                              <h3 className="font-black text-lg text-zinc-900 leading-tight">{selectedProduct.title || "Generazione titolo in corso..."}</h3>
+                              <p className="text-sm text-zinc-600 leading-relaxed whitespace-pre-line">{selectedProduct.description || "L'Intelligenza Artificiale sta scrivendo la descrizione di questo prodotto. Potrebbe volerci qualche istante."}</p>
+
+                              {(selectedProduct.composition || selectedProduct.made_in) && (
+                                <div className="flex flex-wrap gap-2 pt-1">
+                                  {selectedProduct.composition && (
+                                    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg bg-zinc-100 text-zinc-700 border border-zinc-200">
+                                      <Tag size={12} /> Composizione: {selectedProduct.composition}
+                                    </span>
+                                  )}
+                                  {selectedProduct.made_in && (
+                                    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg bg-zinc-100 text-zinc-700 border border-zinc-200">
+                                      {selectedProduct.made_in}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+
+                              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-zinc-100">
+                                <input
+                                  ref={compositionInputRef}
+                                  type="file"
+                                  accept="image/*"
+                                  capture="environment"
+                                  multiple
+                                  className="hidden"
+                                  onChange={handleAddCompositionPhotos}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => compositionInputRef.current?.click()}
+                                  disabled={isUploadingComposition || isParsingComposition}
+                                  className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl bg-zinc-900 text-white hover:bg-zinc-800 active:scale-95 transition-all disabled:opacity-50"
+                                >
+                                  {isUploadingComposition ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+                                  {isUploadingComposition ? 'Analisi DeepSeek...' : '+ Cartellino Composizione'}
+                                </button>
+
+                                {selectedProduct.product_images?.some(img => img.type === 'composition_tag') && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleParseComposition()}
+                                    disabled={isParsingComposition || isUploadingComposition}
+                                    className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl bg-indigo-50 text-indigo-700 hover:bg-indigo-100 active:scale-95 transition-all disabled:opacity-50"
+                                  >
+                                    {isParsingComposition ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                                    Rileggi Composizione (AI)
+                                  </button>
+                                )}
+                              </div>
                             </section>
 
                             <section>
@@ -1656,7 +1972,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                                         >
                                             <img src={img.url} className="w-full h-full object-cover pointer-events-none" />
                                             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-zinc-900/80 via-zinc-900/30 to-transparent p-3 pt-8 pointer-events-none">
-                                                <p className="text-white text-[10px] tracking-wider font-bold uppercase">{img.type.replace('_', ' ')}</p>
+                                                <p className="text-white text-[10px] tracking-wider font-bold uppercase">{img.type === 'composition_tag' ? 'COMPOSIZIONE' : img.type.replace('_', ' ')}</p>
                                             </div>
                                         </div>
                                     ))}
@@ -1713,14 +2029,14 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                   image={fullscreenImage.url}
                   crop={crop}
                   zoom={zoom}
-                  aspect={fullscreenImage.type === 'tag' ? undefined : 3/4}
-                  minZoom={fullscreenImage.type === 'tag' ? 1 : 0.2}
+                  aspect={(fullscreenImage.type === 'tag' || fullscreenImage.type === 'composition_tag') ? undefined : 3/4}
+                  minZoom={(fullscreenImage.type === 'tag' || fullscreenImage.type === 'composition_tag') ? 1 : 0.2}
                   maxZoom={4}
-                  restrictPosition={fullscreenImage.type === 'tag'}
+                  restrictPosition={fullscreenImage.type === 'tag' || fullscreenImage.type === 'composition_tag'}
                   onCropChange={setCrop}
                   onZoomChange={setZoom}
                   onCropComplete={(croppedArea, pixels) => setCroppedAreaPixels(pixels)}
-                  style={{ containerStyle: { backgroundColor: fullscreenImage.type === 'tag' ? '#000000' : '#ffffff' } }}
+                  style={{ containerStyle: { backgroundColor: (fullscreenImage.type === 'tag' || fullscreenImage.type === 'composition_tag') ? '#000000' : '#ffffff' } }}
                 />
               </div>
               <div className="h-32 bg-zinc-900 pb-safe flex flex-col justify-center px-6 gap-4 border-t border-zinc-800">
@@ -1728,7 +2044,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                   <span className="text-xs font-bold uppercase tracking-widest text-zinc-400">Zoom</span>
                   <input 
                     type="range" 
-                    min={fullscreenImage.type === 'tag' ? 1 : 0.2} 
+                    min={(fullscreenImage.type === 'tag' || fullscreenImage.type === 'composition_tag') ? 1 : 0.2} 
                     max={3} step={0.05} 
                     value={zoom} 
                     onChange={e => setZoom(e.target.value)} 
@@ -1761,7 +2077,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                 </button>
                 
                 {/* AZIONE TAG: AI o Selezione */}
-                {(fullscreenImage.type === 'tag' || fullscreenImage.angle === 'inner_tag' || fullscreenImage.angle === 'detail_1') && (
+                {(fullscreenImage.type === 'tag' || fullscreenImage.type === 'composition_tag' || fullscreenImage.angle === 'inner_tag' || fullscreenImage.angle === 'detail_1') && (
                   <>
                     <button 
                       onClick={() => setIsTextSelectMode(!isTextSelectMode)}
@@ -1770,14 +2086,27 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                       <TextSelect size={18} /> {isTextSelectMode ? 'Selezione Libera: ON' : 'Seleziona Testo (Live Text)'}
                     </button>
                     
-                    <button 
-                      onClick={handleReparseTag}
-                      disabled={isReparsing}
-                      className="flex items-center gap-2 bg-indigo-600/90 backdrop-blur-lg text-white px-4 py-3 rounded-full hover:bg-indigo-700 active:scale-95 transition-all shadow-lg w-max disabled:opacity-50"
-                    >
-                      {isReparsing ? <Loader2 size={18} className="animate-spin" /> : <ScanText size={18} />} 
-                      Auto-Compila da Foto (AI)
-                    </button>
+                    {fullscreenImage.type !== 'composition_tag' && (
+                      <button 
+                        onClick={handleReparseTag}
+                        disabled={isReparsing}
+                        className="flex items-center gap-2 bg-indigo-600/90 backdrop-blur-lg text-white px-4 py-3 rounded-full hover:bg-indigo-700 active:scale-95 transition-all shadow-lg w-max disabled:opacity-50"
+                      >
+                        {isReparsing ? <Loader2 size={18} className="animate-spin" /> : <ScanText size={18} />} 
+                        Auto-Compila da Foto (AI)
+                      </button>
+                    )}
+
+                    {(fullscreenImage.type === 'composition_tag' || fullscreenImage.angle === 'inner_tag') && (
+                      <button 
+                        onClick={() => handleParseComposition(fullscreenImage.type === 'composition_tag' ? null : [fullscreenImage.url])}
+                        disabled={isParsingComposition}
+                        className="flex items-center gap-2 bg-emerald-600/90 backdrop-blur-lg text-white px-4 py-3 rounded-full hover:bg-emerald-700 active:scale-95 transition-all shadow-lg w-max disabled:opacity-50"
+                      >
+                        {isParsingComposition ? <Loader2 size={18} className="animate-spin" /> : <Tag size={18} />} 
+                        Leggi Composizione &amp; Made in (AI)
+                      </button>
+                    )}
                   </>
                 )}
 
@@ -1798,7 +2127,7 @@ export default function InventoryView({ viewMode, workerId, refreshKey, searchQu
                   className="flex items-center gap-2 bg-white/10 backdrop-blur-lg text-white px-4 py-3 rounded-full hover:bg-white/20 active:scale-95 transition-all shadow-lg w-max"
                 >
                   <Crop size={18} />
-                  {fullscreenImage.type === 'tag' ? 'Ritaglia Etichetta' : 'Centra / Ritaglia'}
+                  {(fullscreenImage.type === 'tag' || fullscreenImage.type === 'composition_tag') ? 'Ritaglia Etichetta' : 'Centra / Ritaglia'}
                 </button>
               </div>
 

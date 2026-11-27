@@ -1,5 +1,11 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
+import {
+  appendCompositionToDescription,
+  normalizeComposition,
+  normalizeMadeIn,
+} from '../../../../lib/composition';
+import { extractCompositionFromImageUrls } from '../../../../lib/deepseekComposition';
 
 // Inizializza OpenAI. Se vuoi usare DeepSeek (solo testo) scommenta la baseURL.
 // Per analizzare le IMMAGINI, GPT-4o è attualmente la scelta più affidabile.
@@ -10,7 +16,39 @@ const openai = new OpenAI({
 
 export async function POST(req) {
   try {
-    const { modelCode, variantCode, categoryName, imageUrls, tagUrl } = await req.json();
+    const {
+      modelCode,
+      variantCode,
+      categoryName,
+      imageUrls = [],
+      tagUrl,
+      composition: initialComposition = '',
+      madeIn: initialMadeIn = '',
+      compositionImageUrls = [],
+    } = await req.json();
+
+    let finalComposition = normalizeComposition(initialComposition);
+    let finalMadeIn = normalizeMadeIn(initialMadeIn);
+
+    if (
+      Array.isArray(compositionImageUrls) &&
+      compositionImageUrls.length > 0 &&
+      !finalComposition &&
+      !finalMadeIn
+    ) {
+      try {
+        const extracted = await extractCompositionFromImageUrls(compositionImageUrls);
+        finalComposition = extracted.composition || '';
+        finalMadeIn = extracted.made_in || '';
+      } catch (compErr) {
+        console.error("Errore DeepSeek Composizione in generate-seo:", compErr);
+      }
+    }
+
+    const extraLabelFacts = [
+      finalComposition ? `- Composizione reale (da etichetta interna): ${finalComposition}` : null,
+      finalMadeIn ? `- Provenienza reale (da etichetta interna): ${finalMadeIn}` : null,
+    ].filter(Boolean).join('\n');
 
     // Prepariamo i messaggi per il modello Vision
     const messages = [
@@ -24,18 +62,22 @@ export async function POST(req) {
         Descrizione Esempio: Sandali da donna firmati 3Juin, modello Megan 095, realizzati artigianalmente in Italia in 100% pregiata pelle lucida in finitura nera. Il design elegante e femminile presenta una raffinata punta aperta, un delicato cinturino alla caviglia e romantiche applicazioni di fiocchi. La calzatura è slanciata da un tacco stiletto ed è rifinita con una classica suola in cuoio. Modello MEGAN095ILLY-MAR.
 
         REGOLE:
-        1. Analizza attentamente le immagini per capire colori, materiali, pattern e dettagli distintivi (es. fiocchi, colletto, zip, tacco).
-        2. Usa un linguaggio elegante, sartoriale e orientato alla vendita.
-        3. Il titolo deve essere conciso (Brand, Categoria, Dettagli principali, Colore).
-        4. Restituisci la risposta SOLO in formato JSON valido con due chiavi: "title" e "description". Senza markdown \`\`\`json.`
+        1. NON inserire taglie, misure, EAN o codici variante nella descrizione.
+        2. Analizza attentamente le immagini per capire colori, materiali, pattern e dettagli distintivi (es. fiocchi, colletto, zip, tacco).
+        3. Usa un linguaggio elegante, sartoriale e orientato alla vendita.
+        4. Il titolo deve essere conciso (Brand, Categoria, Dettagli principali, Colore).
+        5. ${modelCode ? `Il codice modello (${modelCode}) DEVE essere inserito SOLO alla fine della descrizione, usando esattamente la frase: "Modello ${modelCode}."` : 'Concludi la descrizione in modo pulito e professionale.'}
+        6. NON aggiungere righe finali del tipo "Composizione: ..." o "Made in ..." dopo il modello, perché verranno aggiunte automaticamente dal sistema. Se conosci la composizione o la provenienza reale dai dati forniti, rispettala senza inventare materiali o provenienze contrastanti.
+        7. Restituisci la risposta SOLO in formato JSON valido con due chiavi: "title" e "description". Senza markdown \`\`\`json.`
       },
       {
         role: "user",
         content: [
-          { type: "text", text: `Dati Prodotto:\n- Categoria: ${categoryName}\n- Codice Modello: ${modelCode}\n- Codice Variante: ${variantCode}\n\nAnalizza le seguenti foto (compreso il cartellino per dedurre il brand se visibile) e scrivi titolo e descrizione in formato JSON.` },
-          // Aggiungiamo il cartellino per far leggere all'AI il Brand e altri dettagli testuali
-          { type: "image_url", image_url: { url: tagUrl } },
-          // Aggiungiamo al massimo 3 foto del prodotto per risparmiare token ma dare contesto visivo sufficiente
+          {
+            type: "text",
+            text: `Dati Prodotto:\n- Categoria: ${categoryName}\n- Codice Modello: ${modelCode}\n- Codice Variante: ${variantCode}${extraLabelFacts ? `\n${extraLabelFacts}` : ''}\n\nAnalizza le seguenti foto (compreso il cartellino per dedurre il brand se visibile) e scrivi titolo e descrizione in formato JSON.`
+          },
+          ...(tagUrl ? [{ type: "image_url", image_url: { url: tagUrl } }] : []),
           ...imageUrls.slice(0, 3).map(url => ({
             type: "image_url",
             image_url: { url: url }
@@ -55,10 +97,17 @@ export async function POST(req) {
 
     const aiContent = response.choices[0].message.content;
     const parsedData = JSON.parse(aiContent);
+    const finalDescription = appendCompositionToDescription(
+      parsedData.description,
+      finalComposition,
+      finalMadeIn
+    );
 
     return NextResponse.json({ 
       title: parsedData.title, 
-      description: parsedData.description 
+      description: finalDescription,
+      composition: finalComposition,
+      made_in: finalMadeIn,
     });
 
   } catch (error) {

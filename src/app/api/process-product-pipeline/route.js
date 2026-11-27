@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
+import {
+  appendCompositionToDescription,
+  normalizeComposition,
+  normalizeMadeIn,
+} from '../../../../lib/composition';
+import { extractCompositionFromImageUrls } from '../../../../lib/deepseekComposition';
 
 if (process.env.NODE_ENV === 'development') {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -19,11 +25,21 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { productId, workerId, isAccessory, categoryName, modelCode, variantCode, uploadedImages } = body;
+    const {
+      productId,
+      workerId,
+      isAccessory,
+      categoryName,
+      modelCode,
+      variantCode,
+      uploadedImages,
+      composition: initialComposition = '',
+      madeIn: initialMadeIn = '',
+    } = body;
 
     console.log(`[Pipeline] Avvio processo per: ${productId}`);
 
-    // 1. Salvataggio record immagini grezze
+    // 1. Salvataggio record immagini grezze (inclusi eventuali cartellini composizione)
     const imageDbRecords = uploadedImages.map(img => ({
       product_id: productId,
       url: img.url,
@@ -32,13 +48,39 @@ export async function POST(req) {
     }));
     await supabase.from('product_images').insert(imageDbRecords);
 
-    // 2. Separazione tag OCR dalle foto prodotto
+    // 2. Separazione tag OCR, cartellini composizione e foto prodotto
     const tagUrl = uploadedImages.find(i => i.type === 'tag')?.url;
     const rawImages = uploadedImages.filter(i => i.type === 'raw_item');
+    const compositionImages = uploadedImages.filter(i => i.type === 'composition_tag');
 
-    // A. PROCESSO SEO
+    // A. PROCESSO COMPOSIZIONE (DeepSeek) + SEO (OpenAI)
     const seoPromise = async () => {
       try {
+        let finalComposition = normalizeComposition(initialComposition);
+        let finalMadeIn = normalizeMadeIn(initialMadeIn);
+
+        // Se ci sono foto del cartellino composizione ma i dati non sono ancora stati letti, li estrae DeepSeek
+        if (compositionImages.length > 0 && !finalComposition && !finalMadeIn) {
+          try {
+            console.log(`[Pipeline Composizione] Lettura DeepSeek su ${compositionImages.length} foto...`);
+            const extracted = await extractCompositionFromImageUrls(
+              compositionImages.map(i => i.url)
+            );
+            finalComposition = extracted.composition || '';
+            finalMadeIn = extracted.made_in || '';
+
+            if (finalComposition || finalMadeIn) {
+              await supabase.from('products').update({
+                composition: finalComposition || null,
+                made_in: finalMadeIn || null,
+              }).eq('id', productId);
+            }
+            console.log('[Pipeline Composizione] ✅ Estratto:', { finalComposition, finalMadeIn });
+          } catch (compErr) {
+            console.error('[Pipeline Composizione] ❌ Errore DeepSeek:', compErr);
+          }
+        }
+
         console.log("[Pipeline SEO] Avvio AI...");
 
         const systemPrompt = `Sei un copywriter esperto di moda per un e-commerce di lusso.
@@ -55,13 +97,21 @@ REGOLE TASSATIVE:
 4. Individua il Brand (se visibile), i colori, i materiali apparenti e i dettagli distintivi (es. zip, tacco, loghi).
 5. Usa un linguaggio elegante, sartoriale e orientato alla vendita.
 6. Il titolo deve essere conciso e incisivo (Brand, Categoria, Dettagli principali, Colore).
-7. Restituisci la risposta SOLO in formato JSON valido con due chiavi esatte: "title" e "description". Senza markdown o altre scritte.`;
+7. NON aggiungere righe finali del tipo "Composizione: ..." o "Made in ..." dopo "Modello ${modelCode}.", perché verranno aggiunte automaticamente dal sistema. Se conosci la composizione o la provenienza reale dai dati forniti, rispettala senza inventare materiali o provenienze contrastanti.
+8. Restituisci la risposta SOLO in formato JSON valido con due chiavi esatte: "title" e "description". Senza markdown o altre scritte.`;
+
+        const extraLabelFacts = [
+          finalComposition ? `- Composizione reale (da etichetta interna): ${finalComposition}` : null,
+          finalMadeIn ? `- Provenienza reale (da etichetta interna): ${finalMadeIn}` : null,
+        ].filter(Boolean).join('\n');
+
+        const userText = `Dati Prodotto:\n- Categoria: ${categoryName}\n- Codice Modello da inserire alla fine: ${modelCode}${extraLabelFacts ? `\n${extraLabelFacts}` : ''}\n\nAnalizza le seguenti foto e scrivi titolo e descrizione in formato JSON.`;
 
         const messages = [
           { role: "system", content: systemPrompt },
           { role: "user", content: [
-              { type: "text", text: `Dati Prodotto:\n- Categoria: ${categoryName}\n- Codice Modello da inserire alla fine: ${modelCode}\n\nAnalizza le seguenti foto e scrivi titolo e descrizione in formato JSON.` },
-              { type: "image_url", image_url: { url: tagUrl } },
+              { type: "text", text: userText },
+              ...(tagUrl ? [{ type: "image_url", image_url: { url: tagUrl } }] : []),
               ...rawImages.slice(0, 3).map(r => ({ type: "image_url", image_url: { url: r.url } }))
             ]
           }
@@ -76,11 +126,20 @@ REGOLE TASSATIVE:
         });
 
         const seoData = JSON.parse(response.choices[0].message.content);
+        const finalDescription = appendCompositionToDescription(
+          seoData.description,
+          finalComposition,
+          finalMadeIn
+        );
         
-        await supabase.from('products').update({ 
-          title: seoData.title, 
-          description: seoData.description 
-        }).eq('id', productId);
+        const productUpdate = {
+          title: seoData.title,
+          description: finalDescription,
+        };
+        if (finalComposition) productUpdate.composition = finalComposition;
+        if (finalMadeIn) productUpdate.made_in = finalMadeIn;
+
+        await supabase.from('products').update(productUpdate).eq('id', productId);
         
         console.log("[Pipeline SEO] ✅ Completato con successo");
       } catch (e) {

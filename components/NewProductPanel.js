@@ -1,24 +1,29 @@
 "use client"
 import { useState, useEffect } from 'react';
-import { Camera, X, Loader2, Check, Info } from 'lucide-react';
+import { Camera, X, Loader2, Check, Info, Plus, RefreshCw, Tag } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import imageCompression from 'browser-image-compression';
 
 export default function NewProductPanel({ onClose, workerId, categories, initialTagFile }) {
   const [productImages, setProductImages] = useState([]); 
+  const [compositionImages, setCompositionImages] = useState([]);
   
   const [formData, setFormData] = useState({
     model_code: '',
     variant_code: '',
     ean: '',
     category_id: '',
-    raw_text: '' // <-- AGGIUNTO QUI
+    raw_text: '',
+    composition: '',
+    made_in: ''
   });
   
   const [seasons, setSeasons] = useState([]);
   const [selectedSeason, setSelectedSeason] = useState('');
 
   const [isOcrProcessing, setIsOcrProcessing] = useState(true);
+  const [isCompositionProcessing, setIsCompositionProcessing] = useState(false);
+  const [compositionError, setCompositionError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
   const isAccessory = categories.find(c => c.id === formData.category_id)?.gender?.toLowerCase() === 'unisex';
@@ -111,6 +116,79 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
     }
   };
 
+  // 2b. Acquisizione foto cartellino composizione / made-in (una o più foto) + lettura DeepSeek
+  const analyzeCompositionPhotos = async (imagesList) => {
+    if (!imagesList || imagesList.length === 0) return;
+
+    setIsCompositionProcessing(true);
+    setCompositionError('');
+    try {
+      const payload = new FormData();
+      imagesList.forEach((img, idx) => {
+        payload.append('images', img.file, `composition_${idx + 1}.jpg`);
+      });
+
+      const response = await fetch('/api/parse-composition', {
+        method: 'POST',
+        body: payload,
+      });
+
+      if (!response.ok) throw new Error('Errore lettura composizione');
+      const data = await response.json();
+
+      setFormData(prev => ({
+        ...prev,
+        composition: data.composition || prev.composition,
+        made_in: data.made_in || prev.made_in,
+      }));
+    } catch (error) {
+      console.error("Errore DeepSeek Composizione:", error);
+      setCompositionError("Impossibile leggere il cartellino automaticamente. Puoi riprovare o compilare a mano.");
+    } finally {
+      setIsCompositionProcessing(false);
+    }
+  };
+
+  const handleCompositionCapture = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    try {
+      const options = {
+        maxSizeMB: 1,
+        maxWidthOrHeight: 1920,
+        useWebWorker: true,
+        fileType: 'image/jpeg'
+      };
+
+      const compressedEntries = await Promise.all(
+        files.map(async (file, idx) => {
+          const compressedFile = await imageCompression(file, options);
+          return {
+            id: `${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 7)}`,
+            file: compressedFile,
+            preview: URL.createObjectURL(compressedFile),
+          };
+        })
+      );
+
+      const updatedList = [...compositionImages, ...compressedEntries];
+      setCompositionImages(updatedList);
+      analyzeCompositionPhotos(updatedList);
+    } catch (error) {
+      console.error("Errore durante la compressione cartellino composizione:", error);
+      alert("Errore nell'elaborazione della foto del cartellino. Riprova.");
+    } finally {
+      e.target.value = null;
+    }
+  };
+
+  const handleRemoveCompositionImage = (id) => {
+    const target = compositionImages.find(img => img.id === id);
+    if (target?.preview) URL.revokeObjectURL(target.preview);
+    setCompositionImages(prev => prev.filter(img => img.id !== id));
+  };
+
   // 3. Salvataggio
   const handleSave = async () => {
     if (!formData.category_id) return alert("Devi selezionare una categoria.");
@@ -135,7 +213,9 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
           model_code: formData.model_code,
           variant_code: formData.variant_code,
           ean: formData.ean,
-          raw_text: formData.raw_text, // <-- INVIATO AL DB
+          raw_text: formData.raw_text,
+          composition: formData.composition.trim() || null,
+          made_in: formData.made_in.trim() || null,
           status: 'processing',
         }]).select().single();
 
@@ -156,7 +236,8 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
 
       const uploadPromises = [
         uploadFile(initialTagFile, 'tag', 'none'),
-        ...productImages.map(img => uploadFile(img.file, 'raw_item', img.angle))
+        ...productImages.map(img => uploadFile(img.file, 'raw_item', img.angle)),
+        ...compositionImages.map((img, idx) => uploadFile(img.file, 'composition_tag', `composition_${idx + 1}`))
       ];
 
       const uploadedImages = await Promise.all(uploadPromises);
@@ -172,6 +253,8 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
           categoryName,
           modelCode: formData.model_code,
           variantCode: formData.variant_code,
+          composition: formData.composition.trim(),
+          madeIn: formData.made_in.trim(),
           uploadedImages 
         }),
         keepalive: true 
@@ -257,6 +340,96 @@ export default function NewProductPanel({ onClose, workerId, categories, initial
                   placeholder={isOcrProcessing ? "Lettura EAN..." : "Codice a barre"}
                 />
               </div>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <Tag size={16} className="text-gray-700" />
+                <h3 className="font-bold text-gray-900">Cartellino Composizione &amp; Made in</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                {compositionImages.length > 0 && !isCompositionProcessing && (
+                  <button
+                    type="button"
+                    onClick={() => analyzeCompositionPhotos(compositionImages)}
+                    className="flex items-center gap-1 text-xs font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg hover:bg-indigo-100 active:scale-95 transition-all"
+                  >
+                    <RefreshCw size={12} /> Rileggi AI
+                  </button>
+                )}
+                {isCompositionProcessing ? (
+                  <Loader2 size={16} className="animate-spin text-indigo-500" />
+                ) : (formData.composition || formData.made_in) ? (
+                  <Check size={16} className="text-emerald-600" />
+                ) : (
+                  <span className="text-[11px] font-semibold text-gray-400">Opzionale</span>
+                )}
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-500 leading-relaxed">
+              Scatta una o più foto del cartellino interno (composizione e provenienza). DeepSeek leggerà i dati e li aggiungerà sotto il modello nella descrizione.
+            </p>
+
+            <div className="flex overflow-x-auto gap-3 pb-1 hide-scrollbar">
+              {compositionImages.map((img, idx) => (
+                <div key={img.id} className="relative flex-shrink-0 w-24 h-24 rounded-2xl overflow-hidden border border-gray-200 bg-gray-50">
+                  <img src={img.preview} alt={`Composizione ${idx + 1}`} className="w-full h-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveCompositionImage(img.id)}
+                    className="absolute top-1.5 right-1.5 w-6 h-6 bg-black/75 text-white rounded-full flex items-center justify-center active:scale-90 transition-transform"
+                    title="Rimuovi foto"
+                  >
+                    <X size={13} strokeWidth={2.5} />
+                  </button>
+                  <span className="absolute bottom-1 left-1.5 bg-black/60 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-md">
+                    #{idx + 1}
+                  </span>
+                </div>
+              ))}
+
+              <input
+                id="capture-composition-tag"
+                type="file"
+                accept="image/*"
+                capture="environment"
+                multiple
+                className="hidden"
+                onChange={handleCompositionCapture}
+              />
+              <label
+                htmlFor="capture-composition-tag"
+                className="flex-shrink-0 w-24 h-24 rounded-2xl border-2 border-dashed border-gray-300 bg-gray-50 hover:bg-gray-100 flex flex-col items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all text-gray-600"
+              >
+                {compositionImages.length === 0 ? <Camera size={20} /> : <Plus size={20} />}
+                <span className="text-[11px] font-bold text-center leading-tight px-1">
+                  {compositionImages.length === 0 ? 'Scatta' : 'Altra foto'}
+                </span>
+              </label>
+            </div>
+
+            {compositionError && (
+              <p className="text-xs font-medium text-amber-600">{compositionError}</p>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <input
+                type="text"
+                value={formData.composition}
+                onChange={e => setFormData({ ...formData, composition: e.target.value })}
+                className="w-full bg-gray-100 rounded-xl px-4 py-3 text-black text-sm font-medium placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black"
+                placeholder={isCompositionProcessing ? "Lettura composizione..." : "Composizione (es. 100% lana)"}
+              />
+              <input
+                type="text"
+                value={formData.made_in}
+                onChange={e => setFormData({ ...formData, made_in: e.target.value })}
+                className="w-full bg-gray-100 rounded-xl px-4 py-3 text-black text-sm font-medium placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black"
+                placeholder={isCompositionProcessing ? "Lettura Made in..." : "Made in (es. Made in Bangladesh)"}
+              />
             </div>
           </div>
           
